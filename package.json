@@ -1,0 +1,34 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "description": "Discord.js v14 Bot with TypeScript",
+  "main": "dist/bot/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bot/index.js",
+    "dev": "tsx src/bot/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "discord.js"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.18.0",
+    "dotenv": "^16.0.0",
+    "winston": "^3.11.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/winston": "^2.4.4",
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  }
+}
