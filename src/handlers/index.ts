@@ -3,8 +3,8 @@
  * @description 統一匯出所有交互組件處理器
  */
 
-// Button Handler
-export {
+// Import classes for local use
+import {
   ButtonHandler,
   ButtonHandlerError,
   createButtonHandler,
@@ -17,8 +17,7 @@ export {
   type RegisteredHandlerInfo,
 } from './ButtonHandler.js';
 
-// Modal Handler
-export {
+import {
   ModalHandler,
   MultiStepFormManager,
   createModalHandlerResult,
@@ -30,14 +29,12 @@ export {
   type ModalHandlerErrorOptions,
 } from './ModalHandler.js';
 
-// Select Menu Handler
-export {
+import {
   SelectMenuHandler,
   type SelectMenuHandlerOptions,
 } from './SelectMenuHandler.js';
 
-// Context Menu Handler
-export {
+import {
   ContextMenuHandler,
   ContextMenuHandlerError,
   createContextMenuHandler,
@@ -47,6 +44,48 @@ export {
   type RegisteredContextMenuInfo,
   type IContextMenuHandler,
 } from './ContextMenuHandler.js';
+
+// Re-export all
+export {
+  ButtonHandler,
+  ButtonHandlerError,
+  createButtonHandler,
+  type ButtonHandlerOptions,
+  type ButtonHandlerConfig,
+  type ButtonHandlerCallback,
+  type HandlerErrorOptions,
+  type ButtonId解析結果,
+  type HandlerResult,
+  type RegisteredHandlerInfo,
+};
+
+export {
+  ModalHandler,
+  MultiStepFormManager,
+  createModalHandlerResult,
+  type IModalHandler,
+  type ModalFieldValue,
+  type ModalSubmitData,
+  type MultiStepFormState,
+  type RegisteredModalInfo,
+  type ModalHandlerErrorOptions,
+};
+
+export {
+  SelectMenuHandler,
+  type SelectMenuHandlerOptions,
+};
+
+export {
+  ContextMenuHandler,
+  ContextMenuHandlerError,
+  createContextMenuHandler,
+  type ContextMenuHandlerOptions,
+  type ContextMenuHandlerErrorOptions,
+  type ContextMenuHandlerResult,
+  type RegisteredContextMenuInfo,
+  type IContextMenuHandler,
+};
 
 /**
  * 預設匯出的 Handler 列表

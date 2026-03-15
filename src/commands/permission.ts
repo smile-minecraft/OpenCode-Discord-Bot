@@ -7,20 +7,11 @@ import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,
   EmbedBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  ComponentType,
-  GuildMember,
-  Role,
-  User,
   ChatInputCommandInteraction,
-  TextChannel,
   Colors,
 } from 'discord.js';
-import { PermissionService, type UserPermissionInfo } from '../services/PermissionService.js';
+import { PermissionService } from '../services/PermissionService.js';
 import { Database } from '../database/index.js';
-import { logger } from '../utils/logger.js';
 
 /**
  * 權限指令構建器
@@ -110,40 +101,20 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  // 檢查權限
   const permissionService = PermissionService.getInstance();
-  const permissionInfo = await permissionService.getUserPermissionInfo(
+  const userPermission = await permissionService.checkPermission(
     targetUser.id,
-    guild.id
+    guild.id,
+    'user'
   );
 
-  if (!permissionInfo) {
-    await interaction.reply({
-      content: '無法獲取用戶權限資訊',
-      ephemeral: true,
-    });
-    return;
-  }
-
-  // 獲取允許的角色名稱
-  const guildData = await Database.getInstance().getGuild(guild.id);
-  const allowedRoles: string[] = [];
-  if (guildData?.permissions.allowedRoles) {
-    for (const roleId of guildData.permissions.allowedRoles) {
-      try {
-        const role = await guild.roles.fetch(roleId);
-        if (role) {
-          allowedRoles.push(role.name);
-        }
-      } catch {
-        // 忽略無法獲取的角色
-      }
-    }
-  }
-
   const embed = new EmbedBuilder()
-    .setTitle('🔐 權限狀態')
-    .setColor(Colors.Blurple)
-    .setThumbnail(targetUser.displayAvatarURL())
+    .setTitle('🔍 權限檢查結果')
+    .setColor(userPermission.allowed ? Colors.Green : Colors.Red)
+    .setDescription(
+      `用戶 **${targetUser.username}** 的權限狀態`
+    )
     .addFields(
       {
         name: '👤 用戶',
@@ -151,36 +122,20 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
         inline: true,
       },
       {
-        name: '📊 權限等級',
-        value: getLevelEmoji(permissionInfo.level) + ' ' + getLevelName(permissionInfo.level),
+        name: '📊 權限狀態',
+        value: userPermission.allowed ? '✅ 已授權' : '❌ 未授權',
         inline: true,
       },
       {
-        name: '⭐ 所有者',
-        value: permissionInfo.isOwner ? '✅ 是' : '❌ 否',
+        name: '📈 權限等級',
+        value: userPermission.level ? getLevelEmoji(userPermission.level) + ' ' + getLevelName(userPermission.level) : '無',
         inline: true,
-      },
-      {
-        name: '🎭 角色',
-        value: permissionInfo.roles.length > 0
-          ? permissionInfo.roles.map((id) => {
-              const role = guild.roles.cache.get(id);
-              return role ? role.name : id;
-            }).join(', ') || '無'
-          : '無',
-        inline: false,
-      },
-      {
-        name: '✅ 允許的角色',
-        value: allowedRoles.length > 0 ? allowedRoles.join(', ') : '無',
-        inline: false,
       }
     )
     .setTimestamp();
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
   });
 }
 
@@ -195,6 +150,14 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!targetUser) {
+    await interaction.reply({
+      content: '❌ 無法找到指定的用戶',
       ephemeral: true,
     });
     return;
@@ -264,12 +227,21 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
  * 處理 /permission revoke 指令
  */
 async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<void> {
-  const targetUser = interaction.options.getUser('user');
   const guild = interaction.guild;
   
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // 檢查 targetUser 是否存在
+  const targetUser = interaction.options.getUser('user');
+  if (!targetUser) {
+    await interaction.reply({
+      content: '❌ 無法找到指定的用戶',
       ephemeral: true,
     });
     return;

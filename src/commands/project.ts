@@ -8,17 +8,11 @@ import {
   SlashCommandSubcommandBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
-  ColorResolvable,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
   ModalActionRowComponentBuilder,
-  ChannelSelectMenuBuilder,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
-  ButtonBuilder,
-  ButtonStyle,
 } from 'discord.js';
 import { ProjectManager } from '../services/ProjectManager.js';
 import { Colors } from '../builders/EmbedBuilder.js';
@@ -41,7 +35,7 @@ export function createProjectCommand(): SlashCommandBuilder {
     .addSubcommand(createProjectAddSubcommand())
     .addSubcommand(createProjectListSubcommand())
     .addSubcommand(createProjectUseSubcommand())
-    .addSubcommand(createProjectRemoveSubcommand());
+    .addSubcommand(createProjectRemoveSubcommand()) as SlashCommandBuilder;
 }
 
 /**

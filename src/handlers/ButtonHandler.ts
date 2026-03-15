@@ -10,7 +10,18 @@ import type {
   HandlerErrorOptions,
   ButtonId解析結果,
   RegisteredHandlerInfo,
+  HandlerResult,
 } from '../types/handlers.js';
+
+// Re-export types for external use
+export type {
+  ButtonHandlerConfig,
+  ButtonHandlerCallback,
+  HandlerErrorOptions,
+  ButtonId解析結果,
+  RegisteredHandlerInfo,
+  HandlerResult,
+};
 
 /**
  * 按鈕 ID 匹配結果

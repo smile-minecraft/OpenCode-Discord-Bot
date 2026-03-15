@@ -15,7 +15,22 @@ import type {
   ContextMenuHandlerErrorOptions,
   RegisteredContextMenuInfo,
   ContextMenuType,
+  ContextMenuHandlerResult,
+  IContextMenuHandler,
 } from '../types/handlers.js';
+
+// Re-export types for external use
+export type {
+  UserContextMenuHandlerConfig,
+  UserContextMenuHandlerCallback,
+  MessageContextMenuHandlerConfig,
+  MessageContextMenuHandlerCallback,
+  ContextMenuHandlerErrorOptions,
+  RegisteredContextMenuInfo,
+  ContextMenuType,
+  ContextMenuHandlerResult,
+  IContextMenuHandler,
+};
 
 /**
  * Context Menu 處理器錯誤類
@@ -150,10 +165,10 @@ export class ContextMenuHandler {
     const config = this.userHandlers.get(name);
 
     if (config) {
-      await this.executeHandler(config.callback, interaction);
+      await this.executeUserHandler(config.callback, interaction);
     } else if (this.defaultUserHandler) {
       // 使用預設處理器
-      await this.executeHandler(this.defaultUserHandler, interaction);
+      await this.executeUserHandler(this.defaultUserHandler, interaction);
     } else {
       // 無匹配的處理器
       await this.handleError(
@@ -185,10 +200,10 @@ export class ContextMenuHandler {
     const config = this.messageHandlers.get(name);
 
     if (config) {
-      await this.executeHandler(config.callback, interaction);
+      await this.executeMessageHandler(config.callback, interaction);
     } else if (this.defaultMessageHandler) {
       // 使用預設處理器
-      await this.executeHandler(this.defaultMessageHandler, interaction);
+      await this.executeMessageHandler(this.defaultMessageHandler, interaction);
     } else {
       // 無匹配的處理器
       await this.handleError(
@@ -289,11 +304,11 @@ export class ContextMenuHandler {
   // ==================== 私有方法 ====================
 
   /**
-   * 執行處理器回調（User）
+   * 執行使用者 Context Menu 處理器回調
    * @param callback 處理器回調
    * @param interaction User Context Menu 交互
    */
-  private async executeHandler(
+  private async executeUserHandler(
     callback: UserContextMenuHandlerCallback,
     interaction: UserContextMenuCommandInteraction
   ): Promise<void> {
@@ -304,11 +319,11 @@ export class ContextMenuHandler {
   }
 
   /**
-   * 執行處理器回調（Message）
+   * 執行訊息 Context Menu 處理器回調
    * @param callback 處理器回調
    * @param interaction Message Context Menu 交互
    */
-  private async executeHandler(
+  private async executeMessageHandler(
     callback: MessageContextMenuHandlerCallback,
     interaction: MessageContextMenuCommandInteraction
   ): Promise<void> {

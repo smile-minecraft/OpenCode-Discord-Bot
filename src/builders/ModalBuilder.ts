@@ -9,7 +9,6 @@ import {
   TextInputStyle,
   ActionRowBuilder,
   ModalActionRowComponentBuilder,
-  APIActionRowComponent,
 } from 'discord.js';
 
 // ============== 文字輸入樣式常量 ==============
@@ -92,7 +91,7 @@ export class CustomModalBuilder extends ModalBuilder {
       textInput
     );
 
-    return super.addComponents(actionRow as unknown as APIActionRowComponent<ModalActionRowComponentBuilder>);
+    return super.addComponents(actionRow as any);
   }
 
   /**

@@ -13,7 +13,7 @@ import {
   type ChatInputCommandInteraction,
 } from 'discord.js';
 
-import { getQueueManager, type QueueSettings } from '../services/QueueManager.js';
+import { getQueueManager, QueueManager, type QueueSettings } from '../services/QueueManager.js';
 import { log } from '../utils/logger.js';
 
 // ==================== Command Builder ====================
@@ -104,7 +104,7 @@ export async function handleQueueCommand(interaction: ChatInputCommandInteractio
   const queueManager = getQueueManager();
 
   // 記錄命令使用
-  log.command(`/queue ${subcommand}`, interaction.user.id, interaction.guildId);
+  log.command(`/queue ${subcommand}`, interaction.user.id, interaction.guildId ?? undefined);
 
   switch (subcommand) {
     case 'list':

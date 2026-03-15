@@ -13,9 +13,6 @@ import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,
   ChatInputCommandInteraction,
-  ChannelOptionBuilder,
-  StringOptionBuilder,
-  APIApplicationCommandOptionChoice,
 } from 'discord.js';
 import { SessionManager } from '../services/SessionManager.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
@@ -32,7 +29,7 @@ export function createSessionCommand(): SlashCommandBuilder {
     .addSubcommand(createStartSubcommand())
     .addSubcommand(createListSubcommand())
     .addSubcommand(createResumeSubcommand())
-    .addSubcommand(createAbortSubcommand());
+    .addSubcommand(createAbortSubcommand()) as SlashCommandBuilder;
 }
 
 /**
@@ -42,14 +39,14 @@ function createStartSubcommand(): SlashCommandSubcommandBuilder {
   return new SlashCommandSubcommandBuilder()
     .setName('start')
     .setDescription('開始新的 OpenCode Session')
-    .addStringOption(
-      new StringOptionBuilder()
+    .addStringOption((option) =>
+      option
         .setName('prompt')
         .setDescription('Session 的初始提示詞')
         .setRequired(false)
     )
-    .addStringOption(
-      new StringOptionBuilder()
+    .addStringOption((option) =>
+      option
         .setName('model')
         .setDescription('使用的 AI 模型')
         .setRequired(false)
@@ -69,8 +66,8 @@ function createListSubcommand(): SlashCommandSubcommandBuilder {
   return new SlashCommandSubcommandBuilder()
     .setName('list')
     .setDescription('列出所有 Sessions')
-    .addStringOption(
-      new StringOptionBuilder()
+    .addStringOption((option) =>
+      option
         .setName('status')
         .setDescription('過濾 Session 狀態')
         .setRequired(false)
@@ -90,8 +87,8 @@ function createResumeSubcommand(): SlashCommandSubcommandBuilder {
   return new SlashCommandSubcommandBuilder()
     .setName('resume')
     .setDescription('恢復既有的 Session')
-    .addStringOption(
-      new StringOptionBuilder()
+    .addStringOption((option) =>
+      option
         .setName('session_id')
         .setDescription('要恢復的 Session ID')
         .setRequired(true)
@@ -105,8 +102,8 @@ function createAbortSubcommand(): SlashCommandSubcommandBuilder {
   return new SlashCommandSubcommandBuilder()
     .setName('abort')
     .setDescription('終止當前運行中的 Session')
-    .addStringOption(
-      new StringOptionBuilder()
+    .addStringOption((option) =>
+      option
         .setName('session_id')
         .setDescription('要終止的 Session ID')
         .setRequired(false)
@@ -294,7 +291,7 @@ async function handleAbortCommand(
   const sessionId = interaction.options.getString('session_id');
 
   try {
-    const session = await sessionManager.abortSession(sessionId);
+    const session = await sessionManager.abortSession(sessionId ?? undefined);
 
     if (!session) {
       await interaction.editReply({

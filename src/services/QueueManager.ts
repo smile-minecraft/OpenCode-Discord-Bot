@@ -146,7 +146,7 @@ export class QueueManager extends EventEmitter {
   constructor(settings: Partial<QueueSettings> = {}) {
     super();
     this.settings = { ...DEFAULT_SETTINGS, ...settings };
-    log.info('[QueueManager] Initialized with settings', this.settings);
+    log.info('[QueueManager] Initialized with settings', this.settings as unknown as Record<string, unknown>);
   }
 
   // ==================== Public Methods ====================
@@ -278,7 +278,7 @@ export class QueueManager extends EventEmitter {
   updateSettings(newSettings: Partial<QueueSettings>): void {
     this.settings = { ...this.settings, ...newSettings };
     
-    log.info('[QueueManager] Settings updated', this.settings);
+    log.info('[QueueManager] Settings updated', this.settings as unknown as Record<string, unknown>);
     this.emit('settingsChanged', this.settings);
   }
 

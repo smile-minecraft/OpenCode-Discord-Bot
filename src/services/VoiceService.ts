@@ -5,10 +5,9 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { Readable } from 'stream';
+import { createWriteStream } from 'fs';
 import https from 'https';
-import { pipeline } from 'stream/promises';
-import { logger } from '../utils/logger.js';
+import { log as logger } from '../utils/logger.js';
 
 // ============== 類型定義 ==============
 
@@ -75,7 +74,7 @@ export class VoiceService {
     try {
       await fs.mkdir(this.tempDir, { recursive: true });
     } catch (error) {
-      logger.error('[VoiceService] 創建臨時目錄失敗:', error);
+      logger.error('[VoiceService] 創建臨時目錄失敗:', error as Error | Record<string, unknown>);
     }
   }
 
@@ -109,7 +108,7 @@ export class VoiceService {
    */
   private async downloadFile(url: string, destPath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const file = fs.createWriteStream(destPath);
+      const file = createWriteStream(destPath);
       
       https.get(url, (response) => {
         if (response.statusCode === 302 || response.statusCode === 301) {
@@ -195,11 +194,18 @@ export class VoiceService {
       throw new Error(`Gemini API 請求失敗: ${response.status} - ${errorText}`);
     }
 
-    const result = await response.json();
+    const result = await response.json() as {
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{ text?: string }>;
+        };
+      }>;
+    };
     
     // 解析回應
-    if (result.candidates && result.candidates[0]?.content?.parts) {
-      const text = result.candidates[0].content.parts
+    const apiResult = result;
+    if (apiResult.candidates && apiResult.candidates[0]?.content?.parts) {
+      const text = apiResult.candidates[0].content.parts
         .map((part: { text?: string }) => part.text)
         .join('');
       return text;
@@ -231,7 +237,7 @@ export class VoiceService {
     try {
       await fs.unlink(filePath);
     } catch (error) {
-      logger.warn(`[VoiceService] 清理臨時檔案失敗: ${filePath}`, error);
+      logger.warn(`[VoiceService] 清理臨時檔案失敗: ${filePath}`, error as Record<string, unknown>);
     }
   }
 
@@ -284,7 +290,7 @@ export class VoiceService {
         text: text.trim()
       };
     } catch (error) {
-      logger.error('[VoiceService] 轉錄失敗:', error);
+      logger.error('[VoiceService] 轉錄失敗:', error as Error | Record<string, unknown>);
 
       // 嘗試清理臨時檔案
       await this.cleanupTempFile(tempFilePath);

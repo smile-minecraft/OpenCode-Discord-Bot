@@ -15,7 +15,6 @@
 import { createDiscordClient } from './client.js';
 import { loadConfig, getEnvInfo, checkRequiredEnvVars } from '../config/config.js';
 import logger from '../utils/logger.js';
-import errorHandler from '../utils/errorHandler.js';
 
 // 服務匯入
 import {
@@ -138,7 +137,7 @@ process.on('SIGTERM', () => {
  * 初始化所有服務
  * @param config 應用程式配置
  */
-async function initializeServices(config: ReturnType<typeof loadConfig>): Promise<void> {
+async function initializeServices(_config: ReturnType<typeof loadConfig>): Promise<void> {
   logger.info('[Bootstrap] Initializing services...');
 
   // 1. 初始化資料庫
@@ -225,8 +224,9 @@ async function initializeServices(config: ReturnType<typeof loadConfig>): Promis
   // 7. 初始化 Tool Approval Service
   try {
     initializeToolApprovalService({
-      autoApprovePatterns: process.env.AUTO_APPROVE_PATTERNS?.split(',') || [],
-      requireApprovalPatterns: process.env.REQUIRE_APPROVAL_PATTERNS?.split(',') || [],
+      enabled: true,
+      autoApprovedTools: process.env.AUTO_APPROVE_PATTERNS?.split(',') || [],
+      requireApprovalTools: process.env.REQUIRE_APPROVAL_PATTERNS?.split(',') || [],
       approvalTimeout: parseInt(process.env.TOOL_APPROVAL_TIMEOUT || '300000'),
     });
     logger.info('[Bootstrap] Tool Approval Service initialized');

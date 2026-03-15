@@ -3,7 +3,7 @@
  * @description 處理各種 Select Menu 交互事件
  */
 
-import { type AnySelectMenuInteraction, ComponentType } from 'discord.js';
+import { type AnySelectMenuInteraction } from 'discord.js';
 
 import type {
   SelectMenuHandlerConfig,
@@ -30,9 +30,16 @@ export interface SelectMenuHandlerOptions {
 /**
  * 內部選單處理器儲存格式
  */
-interface StoredHandler<T = SelectMenuHandlerConfig> {
+interface StoredHandler {
   /** 處理器配置 */
-  config: T;
+  config: {
+    /** 自定義 ID */
+    customId: string;
+    /** 處理器回調函數 */
+    callback: (interaction: AnySelectMenuInteraction) => Promise<void> | void;
+    /** 處理器描述（可選） */
+    description?: string;
+  };
   /** 是否啟用 */
   enabled: boolean;
 }
@@ -43,22 +50,22 @@ interface StoredHandler<T = SelectMenuHandlerConfig> {
  */
 export class SelectMenuHandler {
   /** String Select Menu 處理器儲存 */
-  private stringSelectHandlers: Map<string, StoredHandler<SelectMenuHandlerConfig>> = new Map();
+  private stringSelectHandlers = new Map<string, StoredHandler>();
 
   /** Channel Select Menu 處理器儲存 */
-  private channelSelectHandlers: Map<string, StoredHandler<ChannelSelectMenuHandlerConfig>> = new Map();
+  private channelSelectHandlers = new Map<string, StoredHandler>();
 
   /** Role Select Menu 處理器儲存 */
-  private roleSelectHandlers: Map<string, StoredHandler<RoleSelectMenuHandlerConfig>> = new Map();
+  private roleSelectHandlers = new Map<string, StoredHandler>();
 
   /** User Select Menu 處理器儲存 */
-  private userSelectHandlers: Map<string, StoredHandler<UserSelectMenuHandlerConfig>> = new Map();
+  private userSelectHandlers = new Map<string, StoredHandler>();
 
   /** Mentionable Select Menu 處理器儲存 */
-  private mentionableSelectHandlers: Map<string, StoredHandler<MentionableSelectMenuHandlerConfig>> = new Map();
+  private mentionableSelectHandlers = new Map<string, StoredHandler>();
 
   /** Any Select Menu 處理器儲存（通用） */
-  private anySelectHandlers: Map<string, StoredHandler<AnySelectMenuHandlerConfig>> = new Map();
+  private anySelectHandlers = new Map<string, StoredHandler>();
 
   /** 選項 */
   private readonly options: Required<SelectMenuHandlerOptions>;
@@ -80,7 +87,7 @@ export class SelectMenuHandler {
    */
   registerStringSelect(config: SelectMenuHandlerConfig): void {
     this.stringSelectHandlers.set(config.customId, {
-      config,
+      config: config as StoredHandler['config'],
       enabled: this.options.defaultEnabled,
     });
 
@@ -95,7 +102,7 @@ export class SelectMenuHandler {
    */
   registerChannelSelect(config: ChannelSelectMenuHandlerConfig): void {
     this.channelSelectHandlers.set(config.customId, {
-      config,
+      config: config as StoredHandler['config'],
       enabled: this.options.defaultEnabled,
     });
 
@@ -110,7 +117,7 @@ export class SelectMenuHandler {
    */
   registerRoleSelect(config: RoleSelectMenuHandlerConfig): void {
     this.roleSelectHandlers.set(config.customId, {
-      config,
+      config: config as StoredHandler['config'],
       enabled: this.options.defaultEnabled,
     });
 
@@ -125,7 +132,7 @@ export class SelectMenuHandler {
    */
   registerUserSelect(config: UserSelectMenuHandlerConfig): void {
     this.userSelectHandlers.set(config.customId, {
-      config,
+      config: config as StoredHandler['config'],
       enabled: this.options.defaultEnabled,
     });
 
@@ -140,7 +147,7 @@ export class SelectMenuHandler {
    */
   registerMentionableSelect(config: MentionableSelectMenuHandlerConfig): void {
     this.mentionableSelectHandlers.set(config.customId, {
-      config,
+      config: config as StoredHandler['config'],
       enabled: this.options.defaultEnabled,
     });
 
@@ -155,7 +162,7 @@ export class SelectMenuHandler {
    */
   registerAnySelect(config: AnySelectMenuHandlerConfig): void {
     this.anySelectHandlers.set(config.customId, {
-      config,
+      config: config as StoredHandler['config'],
       enabled: this.options.defaultEnabled,
     });
 
@@ -170,10 +177,21 @@ export class SelectMenuHandler {
    */
   async handle(interaction: AnySelectMenuInteraction): Promise<void> {
     const customId = interaction.customId;
-    const componentType = ComponentType[interaction.componentType] as unknown as string;
+    
+    // 修復: ComponentType[3] 返回 "SelectMenu" 而不是 "StringSelect"
+    // 因為 ComponentType.StringSelect = 3 = ComponentType.SelectMenu (棄用的舊名稱)
+    // 需要使用映射表來獲取正確的類型名稱
+    const componentTypeMap: Record<number, string> = {
+      3: 'StringSelect',      // ComponentType.StringSelect = 3
+      4: 'UserSelect',       // ComponentType.UserSelect = 4
+      5: 'RoleSelect',       // ComponentType.RoleSelect = 5
+      6: 'MentionableSelect', // ComponentType.MentionableSelect = 6
+      7: 'ChannelSelect',    // ComponentType.ChannelSelect = 7
+    };
+    const componentType = componentTypeMap[interaction.componentType] || 'StringSelect';
 
     if (this.options.logCalls) {
-      console.log(`[SelectMenuHandler] Handling ${componentType}: ${customId}`);
+      console.log(`[SelectMenuHandler] Handling ${componentType}: ${customId} (raw: ${interaction.componentType})`);
     }
 
     try {
@@ -250,8 +268,16 @@ export class SelectMenuHandler {
    * @returns 選單值
    */
   static extractValues(interaction: AnySelectMenuInteraction): SelectMenuValues {
-    const componentTypeName = ComponentType[interaction.componentType] as unknown as string;
-    const componentTypeMap: Record<string, SelectMenuType> = {
+    // 修復: ComponentType[3] 返回 "SelectMenu" 而不是 "StringSelect"
+    const componentTypeMap: Record<number, string> = {
+      3: 'StringSelect',
+      4: 'UserSelect',
+      5: 'RoleSelect',
+      6: 'MentionableSelect',
+      7: 'ChannelSelect',
+    };
+    const componentTypeName = componentTypeMap[interaction.componentType] || 'StringSelect';
+    const selectTypeMap: Record<string, SelectMenuType> = {
       StringSelect: 'stringSelect',
       ChannelSelect: 'channelSelect',
       RoleSelect: 'roleSelect',
@@ -262,7 +288,7 @@ export class SelectMenuHandler {
     return {
       customId: interaction.customId,
       values: interaction.values,
-      type: componentTypeMap[componentTypeName] || 'stringSelect',
+      type: selectTypeMap[componentTypeName] || 'stringSelect',
       userId: interaction.user.id,
       channelId: interaction.channelId,
       messageId: interaction.message?.id || null,

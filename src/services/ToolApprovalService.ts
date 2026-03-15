@@ -11,10 +11,9 @@ import {
   Colors,
   Message,
   GuildTextBasedChannel,
-  ComponentType,
 } from 'discord.js';
 import { PermissionService, type ToolExecutionRequest, type ApprovalAction, type ToolApprovalRecord } from './PermissionService.js';
-import { logger } from '../utils/logger.js';
+import { log as logger } from '../utils/logger.js';
 
 /**
  * 工具審批配置
@@ -367,7 +366,7 @@ export class ToolApprovalService {
         components: [],
       });
     } catch (error) {
-      logger.error('Error updating approval message:', error);
+      logger.error('Error updating approval message:', error as Error | Record<string, unknown>);
     }
   }
 
@@ -476,7 +475,7 @@ export class ToolApprovalService {
    * 取消所有待處理的審批
    */
   public cancelAllPending(): void {
-    for (const [id, pending] of this.pendingApprovals) {
+    for (const [_id, pending] of this.pendingApprovals) {
       clearTimeout(pending.timeout);
       if (pending.message) {
         pending.message.edit({

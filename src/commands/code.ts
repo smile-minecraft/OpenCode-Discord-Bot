@@ -10,7 +10,6 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ComponentType,
 } from 'discord.js';
 import { getPassthroughService } from '../services/PassthroughService.js';
 import { Colors } from '../builders/EmbedBuilder.js';

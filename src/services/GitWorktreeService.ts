@@ -214,7 +214,7 @@ export class GitWorktreeService {
    * 獲取倉庫狀態
    * @returns 狀態
    */
-  async getRepoStatus(): Promise<'clean' | 'dirty'> {
+  async getRepoStatus(): Promise<'clean' | 'dirty' | 'unknown'> {
     try {
       const output = await this.execGit('git status --porcelain');
       return output ? 'dirty' : 'clean';
@@ -412,7 +412,7 @@ export class GitWorktreeService {
     });
 
     if (!response.ok) {
-      const error = await response.json();
+      const error = await response.json() as { message?: string };
       throw new GitWorktreeError(`Failed to create PR: ${error.message || 'Unknown error'}`, 'PR_CREATE_ERROR');
     }
 

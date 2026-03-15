@@ -31,3 +31,6 @@ export {
   createVoiceCommand,
   handleVoiceCommand,
 } from './voice.js';
+
+// Setup Command
+export { command as setupCommand, execute as handleSetupCommand } from './setup.js';

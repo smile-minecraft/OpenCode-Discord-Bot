@@ -70,8 +70,13 @@ const logger = winston.createLogger({
 
 // 導出各級別日誌函數
 export const log = {
-  error: (message: string, meta?: Record<string, unknown>) => 
-    logger.error(message, meta),
+  error: (message: string, meta?: Record<string, unknown> | Error) => {
+    if (meta instanceof Error) {
+      logger.error(message, { error: meta.message, stack: meta.stack });
+    } else {
+      logger.error(message, meta);
+    }
+  },
   
   warn: (message: string, meta?: Record<string, unknown>) => 
     logger.warn(message, meta),

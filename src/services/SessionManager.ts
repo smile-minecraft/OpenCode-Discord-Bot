@@ -5,7 +5,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
-import { Session, SessionData, SessionStatus } from '../database/models/Session.js';
+import { Session, SessionStatus } from '../database/models/Session.js';
 import { v4 as uuidv4 } from 'uuid';
 
 // ============== 類型定義 ==============
@@ -375,7 +375,7 @@ export class SessionManager {
   /**
    * 從持久化存儲加載 Session
    */
-  private async loadSession(sessionId: string): Promise<Session | null> {
+  private async loadSession(_sessionId: string): Promise<Session | null> {
     // TODO: 從數據庫或文件系統加載 Session
     // 這裡需要與 Kimaki 的數據庫整合
     return null;
@@ -384,7 +384,7 @@ export class SessionManager {
   /**
    * 保存 Session 到持久化存儲
    */
-  private async saveSession(session: Session): Promise<void> {
+  private async saveSession(_session: Session): Promise<void> {
     // TODO: 保存 Session 到數據庫或文件系統
     // 這裡需要與 Kimaki 的數據庫整合
   }

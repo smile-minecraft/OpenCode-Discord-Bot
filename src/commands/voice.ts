@@ -11,10 +11,9 @@ import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,
   ChatInputCommandInteraction,
-  StringOptionBuilder,
   EmbedBuilder,
 } from 'discord.js';
-import { getVoiceService, VoiceService } from '../services/VoiceService.js';
+import { getVoiceService } from '../services/VoiceService.js';
 
 // ============== 指令構建 ==============
 
@@ -26,7 +25,7 @@ export function createVoiceCommand(): SlashCommandBuilder {
     .setName('voice')
     .setDescription('管理語音轉錄服務')
     .addSubcommand(createStatusSubcommand())
-    .addSubcommand(createSetSubcommand());
+    .addSubcommand(createSetSubcommand()) as SlashCommandBuilder;
 }
 
 /**
@@ -45,8 +44,8 @@ function createSetSubcommand(): SlashCommandSubcommandBuilder {
   return new SlashCommandSubcommandBuilder()
     .setName('set')
     .setDescription('設定 API Key')
-    .addStringOption(
-      new StringOptionBuilder()
+    .addStringOption((option) =>
+      option
         .setName('api_key')
         .setDescription('Gemini API Key')
         .setRequired(true)

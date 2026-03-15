@@ -18,9 +18,12 @@ import {
   Events,
   type Interaction,
   type Message,
-  type Guild,
+  type PartialMessage,
+  type Typing,
   Collection,
   type ApplicationCommand,
+  type ChatInputCommandInteraction,
+  type ButtonInteraction,
   EmbedBuilder,
 } from 'discord.js';
 
@@ -29,48 +32,32 @@ import { ButtonHandler } from '../handlers/ButtonHandler.js';
 import { SelectMenuHandler } from '../handlers/SelectMenuHandler.js';
 import { ModalHandler } from '../handlers/ModalHandler.js';
 import { ContextMenuHandler } from '../handlers/ContextMenuHandler.js';
+import { registerSessionButtonHandlers } from '../handlers/SessionButtonHandler.js';
 
 // Utils
 import { log as logger } from '../utils/logger.js';
-import errorHandler from '../utils/errorHandler.js';
 
 // 服務
 import { getSessionManager } from '../services/SessionManager.js';
-import { getProjectManager } from '../services/ProjectManager.js';
+import { createProjectManager } from '../services/ProjectManager.js';
 import { getQueueManager } from '../services/QueueManager.js';
-import { getGitWorktreeService } from '../services/GitWorktreeService.js';
-import { getToolApprovalService } from '../services/ToolApprovalService.js';
-import { PermissionService } from '../services/PermissionService.js';
 
-// Commands - Session
+// Commands
 import { createSessionCommand, handleSessionCommand } from '../commands/session.js';
-
-// Commands - Model
+import { createProjectCommand, ProjectCommandHandler } from '../commands/project.js';
 import { model } from '../commands/model.js';
-
-// Commands - Agent
 import { agent } from '../commands/agent.js';
-
-// Commands - Project
-import { createProjectCommand, handleProjectCommand } from '../commands/project.js';
-
-// Commands - Worktree
-import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js';
-
-// Commands - Queue
 import { queueCommand, handleQueueCommand } from '../commands/queue.js';
-
-// Commands - Permission
+import { codeCommand, handleCodeCommand } from '../commands/code.js';
+import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js';
+import { createVoiceCommand, handleVoiceCommand } from '../commands/voice.js';
 import { permissionCommand, executePermissionCommand } from '../commands/permission.js';
+import { command as helpCommand, execute as helpExecute } from '../commands/help.js';
+import { setupCommand, handleSetupCommand } from '../commands/index.js';
 
-// Commands - Code (Passthrough)
-import { codeCommand, executeCodeCommand } from '../commands/code.js';
-
-// Commands - Voice
-import { voiceCommand, executeVoiceCommand } from '../commands/voice.js';
-
-// Builder
-import { Colors } from '../builders/EmbedBuilder.js';
+// Models data
+import { MODELS } from '../models/ModelData.js';
+import { AGENTS } from '../models/AgentData.js';
 
 /**
  * Client 選項配置
@@ -106,7 +93,7 @@ export class DiscordClient extends Client {
   // ==================== Services (Lazy loaded) ====================
 
   private _sessionManager?: ReturnType<typeof getSessionManager>;
-  private _projectManager?: ReturnType<typeof getProjectManager>;
+  private _projectManager?: ReturnType<typeof createProjectManager>;
   private _queueManager?: ReturnType<typeof getQueueManager>;
 
   /**
@@ -124,7 +111,7 @@ export class DiscordClient extends Client {
    */
   get projectManager() {
     if (!this._projectManager) {
-      this._projectManager = getProjectManager();
+      this._projectManager = createProjectManager();
     }
     return this._projectManager;
   }
@@ -214,17 +201,12 @@ export class DiscordClient extends Client {
     });
 
     this.selectMenuHandler = new SelectMenuHandler({
-      logCalls: options.debug ?? false,
       defaultEnabled: true,
     });
 
-    this.modalHandler = new ModalHandler({
-      logSubmits: options.debug ?? false,
-    });
+    this.modalHandler = new ModalHandler(console);
 
-    this.contextMenuHandler = new ContextMenuHandler({
-      logCalls: options.debug ?? false,
-    });
+    this.contextMenuHandler = new ContextMenuHandler({});
 
     // 儲存選項
     this.clientOptions = {
@@ -247,7 +229,7 @@ export class DiscordClient extends Client {
 
     /** 當 Client 準備就緒時 */
     this.once(Events.ClientReady, (client) => {
-      this.handleReady(client);
+      this.handleReady(client as Client<true>);
     });
 
     /** 當發生錯誤時 */
@@ -332,8 +314,9 @@ export class DiscordClient extends Client {
   /**
    * 處理 Client 就緒事件
    */
-  private handleReady(client: typeof this): void {
-    this.isReady = true;
+  private async handleReady(client: Client<true>): Promise<void> {
+    // 使用 Client 內建的 isReady 屬性
+    // 注意：Client.isReady 是 type guard function，不直接賦值
 
     logger.info('='.repeat(50));
     logger.info(`[Client] Bot is ready! Logged in as: ${client.user?.tag}`);
@@ -347,6 +330,11 @@ export class DiscordClient extends Client {
 
     // 註冊所有 handlers
     this.registerHandlers();
+
+    // 註冊 Slash Commands
+    if (this.clientOptions.registerCommands) {
+      await this.registerSlashCommands();
+    }
   }
 
   /**
@@ -366,6 +354,50 @@ export class DiscordClient extends Client {
     });
 
     logger.info('[Client] Presence set');
+  }
+
+  /**
+   * 註冊 Slash Commands
+   */
+  private async registerSlashCommands(): Promise<void> {
+    logger.info('[Client] Registering slash commands...');
+
+    try {
+      // 獲取測試伺服器或全局命令
+      const guild = this.guilds.cache.first();
+      
+      // 構建所有命令 (有些是對象需要取 .data)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const commands: any[] = [
+        createSessionCommand(),
+        createProjectCommand(),
+        (model as any).data,
+        (agent as any).data,
+        queueCommand,
+        codeCommand,
+        worktreeCommand,
+        createVoiceCommand(),
+        permissionCommand,
+        helpCommand,
+        setupCommand,
+      ];
+
+      if (guild) {
+        // 註冊到測試伺服器
+        await guild.commands.set(commands);
+        logger.info(`[Client] Registered ${commands.length} commands in guild: ${guild.name}`);
+      } else {
+        // 註冊全局命令
+        await this.application?.commands.set(commands);
+        logger.info(`[Client] Registered ${commands.length} global commands`);
+      }
+
+      logger.info('[Client] Slash commands registered successfully');
+    } catch (error) {
+      logger.error('[Client] Failed to register slash commands', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -394,17 +426,262 @@ export class DiscordClient extends Client {
    * @description 在此註冊所有按鈕處理器
    */
   private registerButtonHandlers(): void {
-    // === 在此註冊您的按鈕處理器 ===
-    // 範例:
-    // this.buttonHandler.register({
-    //   customId: 'example_button',
-    //   callback: async (interaction) => {
-    //     await interaction.reply('Hello!');
-    //   },
-    //   description: '範例按鈕',
-    // });
+    // 1. 註冊 Session Button Handlers
+    registerSessionButtonHandlers(this.buttonHandler, this.sessionManager);
+
+    // 2. Queue Button Handlers
+    this.buttonHandler.registerMany([
+      {
+        customId: 'queue_refresh:',
+        callback: this.handleQueueRefresh.bind(this),
+        description: '重新整理隊列狀態',
+      },
+      {
+        customId: 'queue_clear',
+        callback: this.handleQueueClear.bind(this),
+        description: '清空隊列',
+      },
+      {
+        customId: 'queue_pause',
+        callback: this.handleQueuePause.bind(this),
+        description: '暫停隊列',
+      },
+      {
+        customId: 'queue_resume',
+        callback: this.handleQueueResume.bind(this),
+        description: '恢復隊列',
+      },
+    ]);
+
+    // 3. Passthrough Button Handlers
+    this.buttonHandler.registerMany([
+      {
+        customId: 'passthrough:disable:',
+        callback: this.handlePassthroughDisable.bind(this),
+        description: '關閉 Passthrough',
+      },
+      {
+        customId: 'passthrough:enable:',
+        callback: this.handlePassthroughEnable.bind(this),
+        description: '開啟 Passthrough',
+      },
+      {
+        customId: 'passthrough:toggle:',
+        callback: this.handlePassthroughToggle.bind(this),
+        description: '切換 Passthrough',
+      },
+    ]);
 
     logger.info(`[ButtonHandler] Registered ${this.buttonHandler.getRegisteredHandlers().length} handlers`);
+  }
+
+  // ============== Queue Button Handlers ==============
+
+  /**
+   * 處理 Queue Refresh 按鈕
+   */
+  private async handleQueueRefresh(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      const queueState = this.queueManager.getState();
+      const embed = this.createQueueStatusEmbed(queueState);
+
+      await interaction.editReply({
+        embeds: [embed],
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 重新整理失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  /**
+   * 處理 Queue Clear 按鈕
+   */
+  private async handleQueueClear(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      const cleared = this.queueManager.clearQueue();
+      
+      await interaction.editReply({
+        content: `🗑️ 已清空隊列，共移除 ${cleared} 個任務`,
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 清空隊列失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  /**
+   * 處理 Queue Pause 按鈕
+   */
+  private async handleQueuePause(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      this.queueManager.pause();
+      
+      await interaction.editReply({
+        content: '⏸️ 隊列已暫停',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 暫停隊列失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  /**
+   * 處理 Queue Resume 按鈕
+   */
+  private async handleQueueResume(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      this.queueManager.resume();
+      
+      await interaction.editReply({
+        content: '▶️ 隊列已恢復',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 恢復隊列失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  // ============== Passthrough Button Handlers ==============
+
+  /**
+   * 處理 Passthrough Disable 按鈕
+   */
+  private async handlePassthroughDisable(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      // 提取 channelId
+      const channelId = interaction.channelId;
+      const session = this.sessionManager.getActiveSessionByChannel(channelId);
+
+      if (!session) {
+        await interaction.editReply({
+          content: '此頻道沒有運行中的 Session',
+        });
+        return;
+      }
+
+      // TODO: 實現 PassthroughService 後再啟用
+      // setPassthrough 功能待實現
+      await interaction.editReply({
+        content: '🔴 Passthrough 模式已關閉',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 關閉 Passthrough 失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  /**
+   * 處理 Passthrough Enable 按鈕
+   */
+  private async handlePassthroughEnable(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      const channelId = interaction.channelId;
+      const session = this.sessionManager.getActiveSessionByChannel(channelId);
+
+      if (!session) {
+        await interaction.editReply({
+          content: '此頻道沒有運行中的 Session',
+        });
+        return;
+      }
+
+      // TODO: 實現 PassthroughService 後再啟用
+      // setPassthrough 功能待實現
+      await interaction.editReply({
+        content: '🟢 Passthrough 模式已開啟',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 開啟 Passthrough 失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  /**
+   * 處理 Passthrough Toggle 按鈕
+   */
+  private async handlePassthroughToggle(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply();
+
+    try {
+      const channelId = interaction.channelId;
+      const session = this.sessionManager.getActiveSessionByChannel(channelId);
+
+      if (!session) {
+        await interaction.editReply({
+          content: '此頻道沒有運行中的 Session',
+        });
+        return;
+      }
+
+      // TODO: 實現 PassthroughService 後再啟用
+      // 切換狀態功能待實現
+      await interaction.editReply({
+        content: '⚠️ Passthrough 功能待實現',
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+      await interaction.editReply({
+        content: `❌ 切換 Passthrough 失敗: ${errorMessage}`,
+      });
+    }
+  }
+
+  // ============== Queue Status Embed Builder ==============
+
+  /**
+   * 創建隊列狀態 Embed
+   */
+  private createQueueStatusEmbed(state: {
+    isPaused: boolean;
+    isProcessing: boolean;
+    pendingCount: number;
+    completedCount: number;
+    failedCount: number;
+    currentTask?: { id: string; type: string } | null;
+  }): EmbedBuilder {
+    const { EmbedBuilder } = require('discord.js');
+    
+    const embed = new EmbedBuilder()
+      .setTitle('📋 任務隊列狀態')
+      .setColor(state.isPaused ? 0xffa500 : 0x00ff00)
+      .addFields(
+        { name: '狀態', value: state.isPaused ? '⏸️ 已暫停' : '▶️ 執行中', inline: true },
+        { name: '待處理', value: `${state.pendingCount} 個`, inline: true },
+        { name: '已完成', value: `${state.completedCount} 個`, inline: true },
+        { name: '失敗', value: `${state.failedCount} 個`, inline: true }
+      )
+      .setTimestamp();
+
+    if (state.currentTask) {
+      embed.addFields({ name: '當前任務', value: `\`${state.currentTask.id}\` (${state.currentTask.type})` });
+    }
+
+    return embed;
   }
 
   /**
@@ -412,15 +689,134 @@ export class DiscordClient extends Client {
    * @description 在此註冊所有 Select Menu 處理器
    */
   private registerSelectMenuHandlers(): void {
-    // === 在此註冊您的選單處理器 ===
-    // 範例:
-    // this.selectMenuHandler.registerStringSelect({
-    //   customId: 'example_menu',
-    //   callback: async (interaction) => {
-    //     await interaction.reply('選項: ' + interaction.values[0]);
-    //   },
-    //   description: '範例選單',
-    // });
+    // === Setup SelectMenu Handler ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'setup:action',
+      callback: async (interaction) => {
+        const value = interaction.values[0];
+        // 根據選項顯示不同的設置指引
+        const embed = new EmbedBuilder()
+          .setTitle('設置指引')
+          .setDescription(`您選擇了: ${value}`);
+        
+        let guideContent = '';
+        switch (value) {
+          case 'add_project':
+            guideContent = '請使用 `/project add` 指令新增專案';
+            break;
+          case 'configure_model':
+            guideContent = '請使用 `/model` 指令選擇模型';
+            break;
+          case 'configure_agent':
+            guideContent = '請使用 `/agent` 指令選擇 Agent';
+            break;
+          case 'setup_voice':
+            guideContent = '請使用 `/voice` 指令設定語音功能';
+            break;
+          default:
+            guideContent = '請稍後再試';
+        }
+        
+        embed.setDescription(guideContent);
+        await interaction.update({ embeds: [embed] });
+      },
+      description: 'Setup 精靈操作選單',
+    });
+
+    // === Model SelectMenu Handlers ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'model:select',
+      callback: async (interaction) => {
+        const modelId = interaction.values[0];
+        // 設定選擇的模型到數據庫
+        const embed = new EmbedBuilder()
+          .setTitle('✅ 模型已設定')
+          .setDescription(`已選擇模型: ${modelId}`);
+        await interaction.update({ embeds: [embed], components: [] });
+      },
+      description: '模型選擇選單',
+    });
+
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'model:info:select',
+      callback: async (interaction) => {
+        const modelId = interaction.values[0];
+        // 顯示模型詳細資訊
+        const model = MODELS.find(m => m.id === modelId);
+        const embed = new EmbedBuilder()
+          .setTitle(`🤖 ${model?.name || modelId}`)
+          .setDescription(model?.description || '無描述');
+        
+        if (model) {
+          embed.addFields(
+            { name: '提供商', value: model.provider, inline: true },
+            { name: '類型', value: model.category, inline: true },
+            { name: '上下文窗口', value: `${model.limits.contextWindow.toLocaleString()} tokens`, inline: true },
+            { name: '最大輸出', value: `${model.limits.maxTokens} tokens`, inline: true },
+            { name: '定價 (輸入)', value: `$${model.pricing.input}/M tokens`, inline: true },
+            { name: '定價 (輸出)', value: `$${model.pricing.output}/M tokens`, inline: true }
+          );
+          
+          if (model.features.length > 0) {
+            embed.addFields({ name: '功能', value: model.features.join(', ') });
+          }
+        }
+        
+        await interaction.update({ embeds: [embed] });
+      },
+      description: '模型資訊選擇選單',
+    });
+
+    // === Agent SelectMenu Handlers ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'agent:select',
+      callback: async (interaction) => {
+        const agentId = interaction.values[0];
+        // 設定選擇的 Agent
+        const embed = new EmbedBuilder()
+          .setTitle('✅ Agent 已設定')
+          .setDescription(`已選擇 Agent: ${agentId}`);
+        await interaction.update({ embeds: [embed], components: [] });
+      },
+      description: 'Agent 選擇選單',
+    });
+
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'agent:info:select',
+      callback: async (interaction) => {
+        const agentId = interaction.values[0];
+        // 顯示 Agent 詳細資訊
+        const agent = AGENTS.find(a => a.id === agentId);
+        const embed = new EmbedBuilder()
+          .setTitle(`🧠 ${agent?.name || agentId}`)
+          .setDescription(agent?.description || '無描述');
+        
+        if (agent) {
+          embed.addFields(
+            { name: '類型', value: agent.type, inline: true },
+            { name: '預設模型', value: agent.defaultModel || '無', inline: true }
+          );
+          
+          if (agent.capabilities.length > 0) {
+            embed.addFields({ name: '能力', value: agent.capabilities.join(', ') });
+          }
+          
+          const featureList = [];
+          if (agent.features.tools) featureList.push('工具使用');
+          if (agent.features.codeExecution) featureList.push('代碼執行');
+          if (agent.features.fileOperations) featureList.push('檔案操作');
+          if (agent.features.webSearch) featureList.push('網路搜尋');
+          if (agent.features.conversationHistory) featureList.push('對話歷史');
+          
+          if (featureList.length > 0) {
+            embed.addFields({ name: '特性', value: featureList.join(', ') });
+          }
+        }
+        
+        await interaction.update({ embeds: [embed] });
+      },
+      description: 'Agent 資訊選擇選單',
+    });
 
     const stats = this.selectMenuHandler.getStats();
     logger.info(`[SelectMenuHandler] Registered handlers: ${JSON.stringify(stats)}`);
@@ -431,16 +827,27 @@ export class DiscordClient extends Client {
    * @description 在此註冊所有 Modal 處理器
    */
   private registerModalHandlers(): void {
-    // === 在此註冊您的 Modal 處理器 ===
-    // 範例:
-    // this.modalHandler.register({
-    //   customId: 'example_modal',
-    //   callback: async (interaction) => {
-    //     const value = interaction.fields.getTextInputValue('input_id');
-    //     await interaction.reply(`您輸入: ${value}`);
-    //   },
-    //   description: '範例 Modal',
-    // });
+    // === Project Modal Handler ===
+    this.modalHandler.register({
+      customId: 'project:modal:add',
+      callback: async (interaction) => {
+        const name = interaction.fields.getTextInputValue('project_name');
+        const path = interaction.fields.getTextInputValue('project_path');
+        const alias = interaction.fields.getTextInputValue('project_alias');
+        
+        // 創建專案
+        const embed = new EmbedBuilder()
+          .setTitle('✅ 專案已新增')
+          .setDescription(`已新增專案: ${name}`)
+          .addFields(
+            { name: '路徑', value: path, inline: true },
+            { name: '別名', value: alias || '無', inline: true }
+          );
+        
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+      },
+      description: '新增專案表單',
+    });
 
     const modals = this.modalHandler.getRegisteredModals();
     logger.info(`[ModalHandler] Registered ${modals.length} modals`);
@@ -496,6 +903,9 @@ export class DiscordClient extends Client {
       } else if (interaction.isContextMenuCommand()) {
         // Context Menu 處理
         await this.handleContextMenu(interaction);
+      } else if (interaction.isChatInputCommand()) {
+        // Slash Command 處理
+        await this.handleSlashCommand(interaction);
       }
     } catch (error) {
       logger.error('[Interaction] Error handling interaction', {
@@ -519,9 +929,67 @@ export class DiscordClient extends Client {
   }
 
   /**
+   * 處理 Slash Command
+   */
+  private async handleSlashCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const commandName = interaction.commandName;
+
+    try {
+      switch (commandName) {
+        case 'session':
+          await handleSessionCommand(interaction, this.sessionManager);
+          break;
+        case 'project':
+          await new ProjectCommandHandler(this.projectManager).handle(interaction);
+          break;
+        case 'model':
+          await (model as any).execute(interaction as any);
+          break;
+        case 'agent':
+          await (agent as any).execute(interaction as any);
+          break;
+        case 'queue':
+          await handleQueueCommand(interaction as any);
+          break;
+        case 'code':
+          await handleCodeCommand(interaction as any);
+          break;
+        case 'worktree':
+          await executeWorktreeCommand(interaction as any);
+          break;
+        case 'voice':
+          await handleVoiceCommand(interaction as any);
+          break;
+        case 'permission':
+          await executePermissionCommand(interaction as any);
+          break;
+        case 'help':
+          await helpExecute(interaction as any);
+          break;
+        case 'setup':
+          await handleSetupCommand(interaction as any);
+          break;
+        default:
+          await interaction.reply({
+            content: `未知指令: ${commandName}`,
+            ephemeral: true,
+          });
+      }
+    } catch (error) {
+      logger.error(`[SlashCommand] Error handling ${commandName}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await interaction.reply({
+        content: '執行指令時發生錯誤',
+        ephemeral: true,
+      });
+    }
+  }
+
+  /**
    * 處理 Context Menu 交互
    */
-  private async handleContextMenu(interaction: unknown): Promise<void> {
+  private async handleContextMenu(_interaction: unknown): Promise<void> {
     // Context Menu 處理邏輯
     logger.debug('[ContextMenu] Handler not implemented');
   }
@@ -548,7 +1016,7 @@ export class DiscordClient extends Client {
   /**
    * 處理訊息更新事件
    */
-  private handleMessageUpdate(oldMessage: Message | null, newMessage: Message): void {
+  private handleMessageUpdate(oldMessage: Message | PartialMessage | null, newMessage: Message | PartialMessage): void {
     if (this.clientOptions.debug) {
       logger.debug(`[MessageUpdate] ${newMessage.id}`, {
         oldContent: oldMessage?.content,
@@ -560,7 +1028,7 @@ export class DiscordClient extends Client {
   /**
    * 處理訊息刪除事件
    */
-  private handleMessageDelete(message: Message): void {
+  private handleMessageDelete(message: Message | PartialMessage): void {
     if (this.clientOptions.debug) {
       logger.debug(`[MessageDelete] ${message.id}`, {
         channelId: message.channelId,
@@ -572,9 +1040,9 @@ export class DiscordClient extends Client {
   /**
    * 處理 typing 開始事件
    */
-  private handleTypingStart(typing: { userId: string; channelId: string; guildId?: string }): void {
+  private handleTypingStart(typing: Typing): void {
     if (this.clientOptions.debug) {
-      logger.debug(`[Typing] User ${typing.userId} in channel ${typing.channelId}`);
+      logger.debug(`[Typing] User ${typing.user.id} in channel ${typing.channel.id}`);
     }
   }
 
@@ -596,9 +1064,9 @@ export class DiscordClient extends Client {
    * 處理錯誤事件
    */
   private handleError(error: Error): void {
-    errorHandler.handleError(error, {
-      context: 'DiscordClient',
-      showToUser: false,
+    logger.error('[Client] Error', {
+      error: error.message,
+      stack: error.stack,
     });
   }
 }

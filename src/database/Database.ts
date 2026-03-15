@@ -52,14 +52,46 @@ export class DatabaseError extends Error {
  * JSON 資料庫類別
  */
 export class Database {
+  private static instance: Database | null = null;
   private options: Required<DatabaseOptions>;
   private guilds: Map<string, Guild> = new Map();
   private sessions: Map<string, Session> = new Map();
   private projects: Map<string, Project> = new Map();
 
-  constructor(options: DatabaseOptions = {}) {
+  public constructor(options: DatabaseOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
     this.ensureDataDirectory();
+  }
+
+  /**
+   * 取得資料庫單例實例
+   */
+  public static getInstance(): Database {
+    if (!Database.instance) {
+      Database.instance = new Database();
+    }
+    return Database.instance;
+  }
+
+  /**
+   * 重置單例實例（用於測試）
+   */
+  public static resetInstance(): void {
+    Database.instance = null;
+  }
+
+  /**
+   * 初始化資料庫
+   */
+  public async initialize(): Promise<void> {
+    this.log('Database initialized');
+  }
+
+  /**
+   * 關閉資料庫
+   */
+  public async close(): Promise<void> {
+    this.log('Database closed');
   }
 
   /**

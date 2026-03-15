@@ -5,115 +5,32 @@
 
 import type {
   ModalSubmitInteraction,
-  TextInputComponent,
-  ComponentType
+  TextInputComponent
 } from 'discord.js';
 import type {
   ModalHandlerConfig,
   HandlerResult,
-  HandlerErrorOptions
+  HandlerErrorOptions,
+  ModalFieldValue,
+  ModalSubmitData,
+  MultiStepFormState,
+  ModalHandlerErrorOptions,
+  RegisteredModalInfo,
+  IModalHandler,
 } from '../types/handlers.js';
 
-/**
- * Modal 欄位值
- */
-export interface ModalFieldValue {
-  /** 欄位自定義 ID */
-  customId: string;
-  /** 欄位值 */
-  value: string;
-}
-
-/**
- * Modal 提交資料
- */
-export interface ModalSubmitData {
-  /** Modal 自定義 ID */
-  modalId: string;
-  /** 提交者 ID */
-  userId: string;
-  /** 伺服器 ID（如果是伺服器內的互動） */
-  guildId?: string;
-  /** 頻道 ID */
-  channelId: string;
-  /** 所有欄位值 */
-  fields: ModalFieldValue[];
-}
-
-/**
- * 多步驟表單狀態
- */
-export interface MultiStepFormState {
-  /** 表單步驟 ID */
-  stepId: string;
-  /** 用戶 ID */
-  userId: string;
-  /** 當前步驟 */
-  currentStep: number;
-  /** 總步驟數 */
-  totalSteps: number;
-  /** 表單資料（鍵值對） */
-  data: Record<string, string>;
-  /** 創建時間 */
-  createdAt: Date;
-  /** 過期時間 */
-  expiresAt: Date;
-}
-
-/**
- * Modal Handler 錯誤選項
- */
-export interface ModalHandlerErrorOptions extends HandlerErrorOptions {
-  /** 是否包含欄位資訊 */
-  includeFields?: boolean;
-}
-
-/**
- * ModalHandler 介面
- */
-export interface IModalHandler {
-  /**
-   * 註冊 Modal 處理器
-   */
-  register(config: ModalHandlerConfig): void;
-
-  /**
-   * 處理 Modal 提交
-   */
-  handle(interaction: ModalSubmitInteraction): Promise<void>;
-
-  /**
-   * 從 Modal 提取欄位值
-   */
-  extractFields(interaction: ModalSubmitInteraction): ModalFieldValue[];
-
-  /**
-   * 解析為結構化資料
-   */
-  parseModalData(interaction: ModalSubmitInteraction): ModalSubmitData;
-
-  /**
-   * 獲取所有已註冊的 Modal 處理器
-   */
-  getRegisteredModals(): RegisteredModalInfo[];
-
-  /**
-   * 清除特定 Modal 處理器
-   */
-  clear(customId?: string): void;
-}
-
-/**
- * 已註冊的 Modal 資訊
- */
-export interface RegisteredModalInfo {
-  /** Modal 自定義 ID（支援前綴匹配） */
-  customId: string;
-  /** 描述 */
-  description?: string;
-  /** 註冊時間 */
-  registeredAt: Date;
-}
+// Re-export types for external use
+export type {
+  ModalHandlerConfig,
+  HandlerResult,
+  HandlerErrorOptions,
+  ModalFieldValue,
+  ModalSubmitData,
+  MultiStepFormState,
+  ModalHandlerErrorOptions,
+  RegisteredModalInfo,
+  IModalHandler,
+};
 
 /**
  * ModalHandler 預設實現
@@ -205,7 +122,7 @@ export class ModalHandler implements IModalHandler {
       if ('components' in row) {
         for (const component of row.components) {
           // 檢查是否是 TextInputComponent
-          if (component.type === ComponentType.TextInput) {
+          if (component.type === 4) {
             const textInput = component as TextInputComponent;
             fields.push({
               customId: textInput.customId,
@@ -227,7 +144,7 @@ export class ModalHandler implements IModalHandler {
       modalId: interaction.customId,
       userId: interaction.user.id,
       guildId: interaction.guildId ?? undefined,
-      channelId: interaction.channelId,
+      channelId: interaction.channelId ?? '',
       fields: this.extractFields(interaction)
     };
   }
