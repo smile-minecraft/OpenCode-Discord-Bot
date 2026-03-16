@@ -72,6 +72,10 @@ ON sessions(project_path);
 CREATE INDEX IF NOT EXISTS idx_sessions_status 
 ON sessions(status) WHERE status IN ('running', 'starting', 'waiting');
 
+-- 開始時間索引：用於按時間排序查詢 sessions
+CREATE INDEX IF NOT EXISTS idx_sessions_started_at 
+ON sessions(started_at DESC);
+
 -- ====================
 
 /**

@@ -4,6 +4,7 @@
  */
 
 import { MessageFlags, type UserContextMenuCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
+import logger from '../utils/logger.js';
 import type {
   UserContextMenuHandlerConfig,
   UserContextMenuHandlerCallback,
@@ -156,31 +157,26 @@ export class ContextMenuHandler {
   public async handleUserContextMenu(
     interaction: UserContextMenuCommandInteraction
   ): Promise<void> {
-    const name = interaction.commandName.toLowerCase();
+    await interaction.deferReply({ ephemeral: true });
 
-    // 嘗試找到匹配的處理器
-    const config = this.userHandlers.get(name);
+    try {
+      const name = interaction.commandName.toLowerCase();
 
-    if (config) {
-      await this.executeUserHandler(config.callback, interaction);
-    } else if (this.defaultUserHandler) {
-      // 使用預設處理器
-      await this.executeUserHandler(this.defaultUserHandler, interaction);
-    } else {
-      // 無匹配的處理器
-      await this.handleError(
-        new ContextMenuHandlerError(
-          `No handler registered for user context menu: ${name}`,
-          interaction,
-          {
-            showToUser: true,
-            logLevel: 'warn',
-            customMessage: '此用戶選單功能無法識別',
-            menuType: 'user',
-            menuName: name,
-          }
-        )
-      );
+      // 嘗試找到匹配的處理器
+      const config = this.userHandlers.get(name);
+
+      if (config) {
+        await this.executeUserHandler(config.callback, interaction);
+      } else if (this.defaultUserHandler) {
+        // 使用預設處理器
+        await this.executeUserHandler(this.defaultUserHandler, interaction);
+      } else {
+        // 無匹配的處理器
+        await interaction.editReply('❌ 未知的 Context Menu 命令');
+      }
+    } catch (error) {
+      logger.error('[ContextMenuHandler] Error handling user context menu:', error);
+      await interaction.editReply('❌ 處理命令時發生錯誤');
     }
   }
 
@@ -191,31 +187,26 @@ export class ContextMenuHandler {
   public async handleMessageContextMenu(
     interaction: MessageContextMenuCommandInteraction
   ): Promise<void> {
-    const name = interaction.commandName.toLowerCase();
+    await interaction.deferReply({ ephemeral: true });
 
-    // 嘗試找到匹配的處理器
-    const config = this.messageHandlers.get(name);
+    try {
+      const name = interaction.commandName.toLowerCase();
 
-    if (config) {
-      await this.executeMessageHandler(config.callback, interaction);
-    } else if (this.defaultMessageHandler) {
-      // 使用預設處理器
-      await this.executeMessageHandler(this.defaultMessageHandler, interaction);
-    } else {
-      // 無匹配的處理器
-      await this.handleError(
-        new ContextMenuHandlerError(
-          `No handler registered for message context menu: ${name}`,
-          interaction,
-          {
-            showToUser: true,
-            logLevel: 'warn',
-            customMessage: '此訊息選單功能無法識別',
-            menuType: 'message',
-            menuName: name,
-          }
-        )
-      );
+      // 嘗試找到匹配的處理器
+      const config = this.messageHandlers.get(name);
+
+      if (config) {
+        await this.executeMessageHandler(config.callback, interaction);
+      } else if (this.defaultMessageHandler) {
+        // 使用預設處理器
+        await this.executeMessageHandler(this.defaultMessageHandler, interaction);
+      } else {
+        // 無匹配的處理器
+        await interaction.editReply('❌ 未知的 Context Menu 命令');
+      }
+    } catch (error) {
+      logger.error('[ContextMenuHandler] Error handling message context menu:', error);
+      await interaction.editReply('❌ 處理命令時發生錯誤');
     }
   }
 

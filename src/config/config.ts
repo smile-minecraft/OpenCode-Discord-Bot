@@ -54,6 +54,13 @@ export const envConfigSchema = z.object({
 /**
  * OpenCode 工具審批設定
  */
+
+// 工具審批常量 - 自動批准的工具
+export const AUTO_ALLOW_TOOLS = ['read_file', 'read_multiple_files', 'search_files', 'list_directory', 'grep'] as const;
+
+// 工具審批常量 - 需要審批的工具
+export const REQUIRED_APPROVAL_TOOLS = ['write_file', 'edit_file', 'delete_file', 'bash', 'execute_command', 'install_package', 'git_command'] as const;
+
 export const opencodeToolApprovalConfigSchema = z.object({
   /** 是否啟用工具審批攔截 */
   TOOL_APPROVAL_ENABLED: z
@@ -70,11 +77,11 @@ export const opencodeToolApprovalConfigSchema = z.object({
   /** 自動批准的工具（逗號分隔） */
   TOOL_APPROVAL_AUTO_ALLOW: z
     .string()
-    .default('read_file,read_multiple_files,search_files,list_directory,grep'),
+    .default(AUTO_ALLOW_TOOLS.join(',')),
   /** 需要審批的工具（逗號分隔） */
   TOOL_APPROVAL_REQUIRE_APPROVAL: z
     .string()
-    .default('write_file,edit_file,delete_file,bash,execute_command,install_package,git_command'),
+    .default(REQUIRED_APPROVAL_TOOLS.join(',')),
 });
 
 /**

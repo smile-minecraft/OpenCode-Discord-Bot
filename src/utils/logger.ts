@@ -5,6 +5,10 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 日誌文件配置常量
+const LOG_MAX_SIZE = 5 * 1024 * 1024;  // 5MB
+const LOG_MAX_FILES = 5;
+
 // 日誌格式
 const logFormat = format.combine(
   format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
@@ -56,14 +60,14 @@ const logger = winston.createLogger({
     new transports.File({
       filename: path.join(__dirname, '../../logs/error.log'),
       level: 'error',
-      maxsize: 5 * 1024 * 1024, // 5MB
-      maxFiles: 5
+      maxsize: LOG_MAX_SIZE,
+      maxFiles: LOG_MAX_FILES
     }),
     // 合併日誌文件
     new transports.File({
       filename: path.join(__dirname, '../../logs/combined.log'),
-      maxsize: 5 * 1024 * 1024,
-      maxFiles: 5
+      maxsize: LOG_MAX_SIZE,
+      maxFiles: LOG_MAX_FILES
     })
   ]
 });

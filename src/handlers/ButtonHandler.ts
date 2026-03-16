@@ -14,6 +14,7 @@ import type {
   RegisteredHandlerInfo,
   HandlerResult,
 } from '../types/handlers.js';
+import logger from '../utils/logger.js';
 
 // Re-export types for external use
 export type {
@@ -315,18 +316,17 @@ export class ButtonHandler {
    * @param customId 相關的自定義 ID
    */
   private log(level: 'error' | 'warn' | 'info', message: string, customId?: string): void {
-    const timestamp = new Date().toISOString();
     const idInfo = customId ? ` [${customId}]` : '';
 
     switch (level) {
       case 'error':
-        console.error(`[${timestamp}] ButtonHandler ERROR${idInfo}: ${message}`);
+        logger.error(`ButtonHandler ERROR${idInfo}: ${message}`);
         break;
       case 'warn':
-        console.warn(`[${timestamp}] ButtonHandler WARN${idInfo}: ${message}`);
+        logger.warn(`ButtonHandler WARN${idInfo}: ${message}`);
         break;
       case 'info':
-        console.info(`[${timestamp}] ButtonHandler INFO${idInfo}: ${message}`);
+        logger.info(`ButtonHandler INFO${idInfo}: ${message}`);
         break;
     }
   }

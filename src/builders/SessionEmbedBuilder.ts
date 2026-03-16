@@ -219,7 +219,7 @@ export class SessionStatusEmbedBuilder {
     if (session.prompt) {
       embed.addFields({
         name: '📝 提示詞',
-        value: session.prompt,
+        value: SessionStatusEmbedBuilder.truncate(session.prompt, 1024),
         inline: false,
       });
     }
@@ -256,7 +256,7 @@ export class SessionStatusEmbedBuilder {
     if (session.errorMessage) {
       embed.addFields({
         name: '❌ 錯誤訊息',
-        value: session.errorMessage,
+        value: SessionStatusEmbedBuilder.truncate(session.errorMessage, 1024),
         inline: false,
       });
     }
@@ -331,6 +331,14 @@ export class SessionStatusEmbedBuilder {
     } else {
       return `${seconds}秒`;
     }
+  }
+
+  /**
+   * 截斷字符串到指定長度
+   */
+  private static truncate(str: string, maxLength: number): string {
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength - 3) + '...';
   }
 }
 

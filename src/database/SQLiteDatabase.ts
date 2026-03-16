@@ -92,6 +92,7 @@ export class SQLiteDatabase {
   private dbPath: string;
   private isInitialized = false;
   private options: Required<SQLiteDatabaseOptions>;
+  private backupInterval: NodeJS.Timeout | null = null;
 
   private static instance: SQLiteDatabase | null = null;
 
@@ -217,11 +218,95 @@ export class SQLiteDatabase {
    * 關閉資料庫連線
    */
   close(): void {
+    // 禁用自動備份
+    this.disableAutoBackup();
+    
     if (this.db) {
       this.db.close();
       this.db = null;
       this.isInitialized = false;
       logger.info('[SQLiteDatabase] 資料庫已關閉');
+    }
+  }
+
+  // ==================== 自動備份 ====================
+
+  /**
+   * 啟用自動備份
+   * @param intervalHours 備份間隔（小時），預設 24 小時
+   */
+  enableAutoBackup(intervalHours = 24): void {
+    if (this.backupInterval) {
+      clearInterval(this.backupInterval);
+    }
+
+    this.backupInterval = setInterval(() => {
+      try {
+        this.performBackup();
+      } catch (error) {
+        logger.error('[SQLiteDatabase] Auto backup failed:', error);
+      }
+    }, intervalHours * 60 * 60 * 1000);
+
+    logger.info(`[SQLiteDatabase] Auto backup enabled (${intervalHours}h interval)`);
+  }
+
+  /**
+   * 執行資料庫備份
+   * @returns 備份檔案路徑
+   */
+  async performBackup(): Promise<string> {
+    if (!this.db) {
+      throw new Error('資料庫未初始化');
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${this.dbPath}.backup.${timestamp}`;
+
+    // 使用 SQLite 備份 API (better-sqlite3 的 backup 方法返回 Promise)
+    await this.db.backup(backupPath);
+    logger.info(`[SQLiteDatabase] Backup completed: ${backupPath}`);
+
+    // 清理舊備份
+    this.cleanupOldBackups(5);
+
+    return backupPath;
+  }
+
+  /**
+   * 清理舊備份文件
+   * @param keepCount 保留的備份數量
+   */
+  private cleanupOldBackups(keepCount: number): void {
+    const backupDir = path.dirname(this.dbPath);
+    const dbName = path.basename(this.dbPath, '.db');
+
+    try {
+      const backups = fs.readdirSync(backupDir)
+        .filter(f => f.startsWith(`${dbName}.backup.`))
+        .map(f => ({
+          path: path.join(backupDir, f),
+          time: fs.statSync(path.join(backupDir, f)).mtime.getTime()
+        }))
+        .sort((a, b) => b.time - a.time);
+
+      backups.slice(keepCount).forEach(f => {
+        fs.unlinkSync(f.path);
+        logger.info(`[SQLiteDatabase] Removed old backup: ${f.path}`);
+      });
+    } catch (error) {
+      logger.error('[SQLiteDatabase] Failed to cleanup old backups:', error);
+    }
+  }
+
+  /**
+   * 禁用自動備份
+   */
+  disableAutoBackup(): void {
+    if (this.backupInterval) {
+      clearInterval(this.backupInterval);
+      this.backupInterval = null;
+      logger.info('[SQLiteDatabase] Auto backup disabled');
     }
   }
 
@@ -426,24 +511,30 @@ export class SQLiteDatabase {
   saveMessage(sessionId: string, role: string, content: string, toolCalls?: unknown[]): void {
     if (!this.db) throw new Error('資料庫未初始化');
 
-    const stmt = this.db.prepare(`
-      INSERT INTO messages (session_id, role, content, tool_calls, timestamp)
-      VALUES (?, ?, ?, ?, ?)
-    `);
+    // 使用事務確保消息插入和計數更新的原子性
+    const transaction = this.db.transaction(() => {
+      // 插入消息
+      const stmt = this.db!.prepare(`
+        INSERT INTO messages (session_id, role, content, tool_calls, timestamp)
+        VALUES (?, ?, ?, ?, ?)
+      `);
 
-    stmt.run(
-      sessionId,
-      role,
-      content,
-      toolCalls ? JSON.stringify(toolCalls) : null,
-      Date.now()
-    );
+      stmt.run(
+        sessionId,
+        role,
+        content,
+        toolCalls ? JSON.stringify(toolCalls) : null,
+        Date.now()
+      );
 
-    // 更新 session 的訊息計數
-    this.db.prepare(`
-      UPDATE sessions SET message_count = message_count + 1, updated_at = ?
-      WHERE id = ?
-    `).run(Date.now(), sessionId);
+      // 更新 session 的訊息計數
+      this.db!.prepare(`
+        UPDATE sessions SET message_count = message_count + 1, updated_at = ?
+        WHERE id = ?
+      `).run(Date.now(), sessionId);
+    });
+
+    transaction();
   }
 
   /**

@@ -3,6 +3,7 @@
  * @description 處理 /project 指令及其子指令
  */
 
+import pathModule from 'path';
 import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,

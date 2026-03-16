@@ -3,7 +3,7 @@
  * @description 提供 /worktree 指令，包含 create, list, delete, pr 子指令
  */
 
-import path from 'path';
+import pathModule from 'path';
 import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,
@@ -502,7 +502,7 @@ export async function handleWorktreeButton(interaction: any): Promise<void> {
     const worktreePath = params.join(':');
     
     // 從路徑提取分支名稱
-    const branchName = path.basename(worktreePath).replace(/^.*-worktree-/, '');
+    const branchName = pathModule.basename(worktreePath).replace(/^.*-worktree-/, '');
     
     // 顯示 PR 建立表單說明
     const prHelpEmbed = new EmbedBuilder()

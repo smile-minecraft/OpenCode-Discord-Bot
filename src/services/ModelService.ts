@@ -3,22 +3,19 @@
  * @description 從連接的 Provider 動態獲取模型列表的服務
  */
 
+import { LRUCache } from 'lru-cache';
 import { MODELS, DEFAULT_MODEL, getModelById, type ModelDefinition, type ModelProvider } from '../models/ModelData.js';
 import { log as logger } from '../utils/logger.js';
 import { ProviderService } from './ProviderService.js';
 import { createOpenCodeCloudClient, type OpenCodeProviderType } from './OpenCodeCloudClient.js';
 
-// 緩存配置
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-}
-
-// 模型緩存（按 guildId 緩存）
-const modelCacheByGuild: Map<string, CacheEntry<ModelDefinition[]>> = new Map();
-
-// 緩存配置
-const DEFAULT_CACHE_TTL = 5 * 60 * 1000; // 5 分鐘
+// 模型緩存（按 guildId 緩存）- 使用 LRUCache 自動管理過期和容量
+const modelCacheByGuild = new LRUCache<string, ModelDefinition[]>({
+  max: 1000,              // 最大緩存數
+  ttl: 5 * 60 * 1000,     // 5 分鐘 TTL
+  updateAgeOnGet: true,   // 訪問時更新過期時間
+  updateAgeOnHas: false,
+});
 
 /**
  * 清除模型列表緩存
@@ -132,17 +129,11 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
   if (useCache) {
     const cached = modelCacheByGuild.get(cacheKey);
     if (cached) {
-      const now = Date.now();
-      if (now - cached.timestamp < DEFAULT_CACHE_TTL) {
-        logger.debug('[ModelService] Using cached model list', { 
-          guildId,
-          count: cached.data.length,
-          age: now - cached.timestamp 
-        });
-        return cached.data;
-      } else {
-        logger.debug('[ModelService] Cache expired, refetching models');
-      }
+      logger.debug('[ModelService] Using cached model list', { 
+        guildId,
+        count: cached.length,
+      });
+      return cached;
     }
   }
 
@@ -170,10 +161,7 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
       // 如果有從 providers 獲取的模型
       if (allModels.length > 0) {
         // 更新緩存
-        modelCacheByGuild.set(cacheKey, {
-          data: allModels,
-          timestamp: Date.now(),
-        });
+        modelCacheByGuild.set(cacheKey, allModels);
         
         logger.info('[ModelService] Successfully fetched models from connected providers', { 
           guildId,
@@ -212,10 +200,7 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
     const fallbackModels = MODELS;
     
     // 更新緩存
-    modelCacheByGuild.set(cacheKey, {
-      data: fallbackModels,
-      timestamp: Date.now(),
-    });
+    modelCacheByGuild.set(cacheKey, fallbackModels);
     
     logger.info('[ModelService] Using static model list as fallback', { 
       guildId,

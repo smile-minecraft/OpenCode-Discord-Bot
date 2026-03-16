@@ -4,6 +4,7 @@
  */
 
 import { EmbedBuilder, APIEmbedField, ColorResolvable, GuildMember, User } from 'discord.js';
+import logger from '../utils/logger.js';
 
 // ============== 顏色常量 ==============
 
@@ -196,7 +197,24 @@ export class ModelSelectEmbedBuilder extends CustomEmbedBuilder {
   }): EmbedBuilder {
     const { username, avatarURL, models, currentModel } = options;
 
-    const modelFields = models.map((model) => ({
+    // 限制 fields 數量為 25（Discord 限制）
+    const MAX_FIELDS = 25;
+    let processedModels = models;
+
+    if (models.length > MAX_FIELDS) {
+      const truncatedCount = models.length - MAX_FIELDS + 1;
+      logger.warn(`[EmbedBuilder] Truncating fields from ${models.length} to ${MAX_FIELDS}`);
+      
+      // 截斷並添加提示 field
+      processedModels = models.slice(0, MAX_FIELDS - 1);
+      processedModels.push({
+        id: 'truncated',
+        name: '...',
+        description: `還有 ${truncatedCount} 個模型未顯示`,
+      } as typeof models[number]);
+    }
+
+    const modelFields = processedModels.map((model) => ({
       name: `${model.id === currentModel ? '✅ ' : '🤖 '} ${model.name}`,
       value: model.description,
       inline: false,

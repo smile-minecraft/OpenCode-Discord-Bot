@@ -113,7 +113,15 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
  * 處理 start 子命令 - 顯示設定精靈
  */
 async function handleStart(interaction: ChatInputCommandInteraction): Promise<void> {
-  const guildId = interaction.guildId!;
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({
+      content: '❌ 此命令只能在伺服器中使用',
+      ephemeral: true
+    });
+    return;
+  }
+  
   const config = await getCurrentConfig(guildId);
   const missingItems = getMissingConfigItems(config);
 
@@ -199,7 +207,15 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
  * 處理 status 子命令 - 顯示設定狀態
  */
 async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
-  const guildId = interaction.guildId!;
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({
+      content: '❌ 此命令只能在伺服器中使用',
+      ephemeral: true
+    });
+    return;
+  }
+  
   const config = await getCurrentConfig(guildId);
   const missingItems = getMissingConfigItems(config);
 
@@ -262,6 +278,15 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
 async function handleOpencodePath(interaction: ChatInputCommandInteraction): Promise<void> {
   const path = interaction.options.getString('path', true);
 
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({
+      content: '❌ 此命令只能在伺服器中使用',
+      ephemeral: true
+    });
+    return;
+  }
+
   // 簡單驗證路徑格式
   if (path.length < 2) {
     await interaction.reply({
@@ -277,7 +302,7 @@ async function handleOpencodePath(interaction: ChatInputCommandInteraction): Pro
   }
 
   // 保存路徑
-  await saveConfig(interaction.guildId!, 'opencodePath', path);
+  await saveConfig(guildId, 'opencodePath', path);
 
   const embed = new EmbedBuilder()
     .setColor(Colors.SUCCESS)
@@ -380,6 +405,15 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
 async function handleGeminiKey(interaction: ChatInputCommandInteraction): Promise<void> {
   const apiKey = interaction.options.getString('api_key', true);
 
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({
+      content: '❌ 此命令只能在伺服器中使用',
+      ephemeral: true
+    });
+    return;
+  }
+
   // 簡單驗證 key 格式
   if (apiKey.length < 20) {
     await interaction.reply({
@@ -395,7 +429,7 @@ async function handleGeminiKey(interaction: ChatInputCommandInteraction): Promis
   }
 
   // 保存 API Key
-  await saveConfig(interaction.guildId!, 'geminiApiKey', apiKey);
+  await saveConfig(guildId, 'geminiApiKey', apiKey);
 
   const embed = new EmbedBuilder()
     .setColor(Colors.SUCCESS)

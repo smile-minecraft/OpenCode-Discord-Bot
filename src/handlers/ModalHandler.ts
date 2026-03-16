@@ -3,9 +3,11 @@
  * @description 處理 ModalSubmitInteraction，支援多步驟表單流程
  */
 
-import type {
+import {
   ModalSubmitInteraction,
-  TextInputComponent
+  TextInputComponent,
+  EmbedBuilder,
+  Colors
 } from 'discord.js';
 import type {
   ModalHandlerConfig,
@@ -215,11 +217,32 @@ export class ModalHandler implements IModalHandler {
     interaction: ModalSubmitInteraction,
     options: ModalHandlerErrorOptions
   ): Promise<void> {
-    if (options.showToUser && interaction.replied) {
-      await interaction.followUp({
-        content: options.customMessage || '發生錯誤',
-        flags: ['Ephemeral']
-      });
+    if (!options.showToUser) return;
+    
+    try {
+      const errorEmbed = new EmbedBuilder()
+        .setColor(Colors.Red)
+        .setTitle('❌ 錯誤')
+        .setDescription(options.customMessage || '發生錯誤，請稍後再試。')
+        .setTimestamp();
+      
+      if (interaction.replied) {
+        await interaction.followUp({ 
+          embeds: [errorEmbed], 
+          ephemeral: true 
+        });
+      } else if (interaction.deferred) {
+        await interaction.editReply({ 
+          embeds: [errorEmbed] 
+        });
+      } else {
+        await interaction.reply({ 
+          embeds: [errorEmbed], 
+          ephemeral: true 
+        });
+      }
+    } catch (error) {
+      this.log(`Failed to send error response: ${error}`, 'error');
     }
   }
 

@@ -38,12 +38,58 @@ export interface ApprovalButtonParseResult {
 export class ToolApprovalHandler {
   private toolApprovalService: ToolApprovalService;
   private pendingMessages: Map<string, Message> = new Map();
-
+  private cleanupInterval: NodeJS.Timeout | null = null;
+  private readonly MAX_PENDING_AGE = 24 * 60 * 60 * 1000; // 24小時
+  
   /**
    * 創建工具審批處理器
    */
   constructor(toolApprovalService?: ToolApprovalService) {
     this.toolApprovalService = toolApprovalService || ToolApprovalService.getInstance();
+    
+    // 啟動定時清理 - 每小時清理過期消息
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupOldMessages();
+    }, 60 * 60 * 1000);
+  }
+  
+  /**
+   * 清理過期的待審批訊息
+   */
+  private cleanupOldMessages(): void {
+    const now = Date.now();
+    let cleanedCount = 0;
+    
+    for (const [key, message] of this.pendingMessages) {
+      if (message.createdTimestamp < now - this.MAX_PENDING_AGE) {
+        this.pendingMessages.delete(key);
+        cleanedCount++;
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      logger.debug(`[ToolApprovalHandler] Cleaned up ${cleanedCount} expired messages`);
+    }
+  }
+  
+  /**
+   * 清理指定 Session 的待審批訊息
+   * @param sessionId Session ID
+   */
+  cleanupSession(sessionId: string): void {
+    this.pendingMessages.delete(sessionId);
+  }
+  
+  /**
+   * 銷毀處理器 - 優雅關閉
+   */
+  destroy(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    this.pendingMessages.clear();
+    logger.info('[ToolApprovalHandler] Handler destroyed, all pending messages cleared');
   }
 
   /**
@@ -108,6 +154,9 @@ export class ToolApprovalHandler {
 
       // 根據操作更新訊息
       await this.updateApprovalMessage(interaction, approvalId, action);
+
+      // 審批完成後清理 session
+      this.cleanupSession(approvalId);
 
       logger.info(`[ToolApprovalHandler] 用戶 ${interaction.user.id} 審批 #${approvalId}: ${action}`);
     } catch (error) {

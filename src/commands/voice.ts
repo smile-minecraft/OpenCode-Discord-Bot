@@ -105,7 +105,7 @@ async function handleStatusCommand(
       },
       {
         name: '環境變數',
-        value: process.env.GEMINI_API_KEY ? '✅ GEMINI_API_KEY 已存在' : '⚠️ 請設定 GEMINI_API_KEY',
+        value: process.env.GEMINI_API_KEY ? '✅ 已設定' : '⚠️ 未設定',
         inline: false,
       }
     )

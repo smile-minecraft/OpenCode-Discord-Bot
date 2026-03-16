@@ -34,7 +34,10 @@ import {
  */
 function emergencyShutdown(signal: string): void {
   logger.error(`[Fatal] Received ${signal}, starting emergency shutdown...`);
-  shutdown(1).catch(() => process.exit(1));
+  shutdown(1).catch(() => {
+    // 僅在 shutdown 失敗時退出
+    setTimeout(() => process.exit(1), 1000);
+  });
 }
 
 /**

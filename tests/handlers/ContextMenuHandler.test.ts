@@ -11,6 +11,8 @@ import { ContextMenuHandler, ContextMenuHandlerError, createContextMenuHandler }
 function createMockUserContextInteraction(commandName: string) {
   const replyFn = vi.fn().mockResolvedValue(undefined);
   const followUpFn = vi.fn().mockResolvedValue(undefined);
+  const deferReplyFn = vi.fn().mockResolvedValue(undefined);
+  const editReplyFn = vi.fn().mockResolvedValue(undefined);
 
   return {
     commandName,
@@ -22,6 +24,8 @@ function createMockUserContextInteraction(commandName: string) {
     channelId: 'channel123',
     reply: replyFn,
     followUp: followUpFn,
+    deferReply: deferReplyFn,
+    editReply: editReplyFn,
     deferred: false,
   };
 }
@@ -29,6 +33,8 @@ function createMockUserContextInteraction(commandName: string) {
 function createMockMessageContextInteraction(commandName: string) {
   const replyFn = vi.fn().mockResolvedValue(undefined);
   const followUpFn = vi.fn().mockResolvedValue(undefined);
+  const deferReplyFn = vi.fn().mockResolvedValue(undefined);
+  const editReplyFn = vi.fn().mockResolvedValue(undefined);
 
   return {
     commandName,
@@ -41,6 +47,8 @@ function createMockMessageContextInteraction(commandName: string) {
     channelId: 'channel123',
     reply: replyFn,
     followUp: followUpFn,
+    deferReply: deferReplyFn,
+    editReply: editReplyFn,
     deferred: false,
   };
 }

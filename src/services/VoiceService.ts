@@ -4,8 +4,8 @@
  */
 
 import path from 'path';
-import fs from 'fs/promises';
-import { createWriteStream } from 'fs';
+import fs, { createWriteStream } from 'fs';
+import fsAsync from 'fs/promises';
 import https from 'https';
 import { log as logger } from '../utils/logger.js';
 
@@ -110,37 +110,87 @@ export class VoiceService {
     return new Promise((resolve, reject) => {
       const file = createWriteStream(destPath);
       
-      https.get(url, (response) => {
+      const cleanup = () => {
+        fsAsync.unlink(destPath).catch(() => {});
+      };
+      
+      const timeout = setTimeout(() => {
+        request.destroy();
+        cleanup();
+        reject(new Error('Download timeout'));
+      }, 60000);
+      
+      const request = https.get(url, { timeout: 30000 }, (response) => {
         if (response.statusCode === 302 || response.statusCode === 301) {
           // 處理重定向
           const redirectUrl = response.headers.location;
           if (redirectUrl) {
-            https.get(redirectUrl, (redirectResponse) => {
+            const redirectRequest = https.get(redirectUrl, { timeout: 30000 }, (redirectResponse) => {
               if (redirectResponse.statusCode !== 200) {
+                clearTimeout(timeout);
+                cleanup();
                 reject(new Error(`下載失敗: HTTP ${redirectResponse.statusCode}`));
                 return;
               }
               redirectResponse.pipe(file);
               file.on('finish', () => {
+                clearTimeout(timeout);
                 file.close();
                 resolve();
               });
-            }).on('error', reject);
+              file.on('error', (err) => {
+                clearTimeout(timeout);
+                cleanup();
+                reject(err);
+              });
+            });
+            redirectRequest.on('error', (err) => {
+              clearTimeout(timeout);
+              cleanup();
+              reject(err);
+            });
+            redirectRequest.on('timeout', () => {
+              redirectRequest.destroy();
+              clearTimeout(timeout);
+              cleanup();
+              reject(new Error('Request timeout'));
+            });
             return;
           }
         }
         
         if (response.statusCode !== 200) {
+          clearTimeout(timeout);
+          cleanup();
           reject(new Error(`下載失敗: HTTP ${response.statusCode}`));
           return;
         }
 
         response.pipe(file);
         file.on('finish', () => {
+          clearTimeout(timeout);
           file.close();
           resolve();
         });
-      }).on('error', reject);
+        file.on('error', (err) => {
+          clearTimeout(timeout);
+          cleanup();
+          reject(err);
+        });
+      });
+      
+      request.on('error', (err) => {
+        clearTimeout(timeout);
+        cleanup();
+        reject(err);
+      });
+      
+      request.on('timeout', () => {
+        request.destroy();
+        clearTimeout(timeout);
+        cleanup();
+        reject(new Error('Request timeout'));
+      });
     });
   }
 

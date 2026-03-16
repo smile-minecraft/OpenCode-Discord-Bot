@@ -12,8 +12,37 @@ import { createOpenCodeCloudClient, ValidationResult } from './OpenCodeCloudClie
 
 // ============== 加密配置 ==============
 
-// 用於加密 API Key 的密鑰（從環境變數獲取或使用預設）
-const ENCRYPTION_KEY = process.env.API_KEY_ENCRYPTION_KEY || 'default-dev-key-change-in-production';
+// 用於加密 API Key 的密鑰（從環境變數獲取）
+// 生產環境必須設置 API_KEY_ENCRYPTION_KEY 環境變數
+const ENCRYPTION_KEY = (() => {
+  const key = process.env.API_KEY_ENCRYPTION_KEY;
+  
+  if (!key) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'FATAL: API_KEY_ENCRYPTION_KEY environment variable is required in production. ' +
+        'Generate a secure key with: openssl rand -hex 32'
+      );
+    }
+    
+    console.warn(
+      '⚠️ WARNING: Using development encryption key. ' +
+      'Set API_KEY_ENCRYPTION_KEY environment variable for production.'
+    );
+    return 'dev-key-not-for-production-use-32bytes!!';
+  }
+  
+  // 驗證密鑰長度 (AES-256 需要 32 bytes)
+  if (Buffer.byteLength(key, 'utf8') < 32) {
+    throw new Error(
+      'FATAL: API_KEY_ENCRYPTION_KEY must be at least 32 bytes. ' +
+      'Generate with: openssl rand -hex 32'
+    );
+  }
+  
+  return key;
+})();
+
 const ALGORITHM = 'aes-256-gcm';
 
 /**

@@ -122,6 +122,7 @@ describe('ModelService', () => {
       vi.clearAllMocks();
     });
 
+    // 跳過原因: ES Module mock 無法正確攔截動態 import
     it.skip('應該從 connected providers 成功獲取模型列表', async () => {
       // Mock createOpenCodeCloudClient to return a client with getModels
       vi.mocked(createOpenCodeCloudClient).mockReturnValue({

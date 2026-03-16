@@ -56,6 +56,8 @@ export interface SessionExecutionResult {
 export class SessionManager {
   /** 活躍的 Session 映射 */
   private activeSessions: Map<string, Session> = new Map();
+  /** 頻道 ID 到 Session ID 集合的映射（用於快速查詢） */
+  private channelSessions: Map<string, Set<string>> = new Map();
   /** Provider Service 實例 */
   private providerService: ProviderService;
   /** SQLite 資料庫實例 */
@@ -192,6 +194,7 @@ export class SessionManager {
     const session = new Session({
       sessionId,
       channelId: options.channelId,
+      userId: options.userId,
       status: 'pending',
       prompt: options.prompt,
       model: options.model || this.defaultModel,
@@ -204,6 +207,11 @@ export class SessionManager {
 
     // 註冊到活動列表
     this.activeSessions.set(sessionId, session);
+
+    // 更新頻道索引
+    const channelSessionSet = this.channelSessions.get(options.channelId) || new Set();
+    channelSessionSet.add(sessionId);
+    this.channelSessions.set(options.channelId, channelSessionSet);
 
     let port: number | undefined;
 
@@ -250,7 +258,7 @@ export class SessionManager {
 
       logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSessionInfo.id}, Port: ${port}`);
     } catch (error) {
-      console.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
+      logger.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
       
       // 清理：停止伺服器並釋放端口
       if (port) {
@@ -322,7 +330,7 @@ export class SessionManager {
       session.resume();
       logger.info(`[SessionManager] Session ${sessionId} 恢復成功`);
     } catch (error) {
-      console.error(`[SessionManager] 恢復 Session ${sessionId} 失敗:`, error);
+      logger.error(`[SessionManager] 恢復 Session ${sessionId} 失敗:`, error);
       session.fail(error instanceof Error ? error.message : '未知錯誤');
     }
 
@@ -370,6 +378,15 @@ export class SessionManager {
     // 從活動列表移除
     this.activeSessions.delete(sessionId);
 
+    // 從頻道索引移除
+    const channelSessionSet = this.channelSessions.get(session.channelId);
+    if (channelSessionSet) {
+      channelSessionSet.delete(sessionId);
+      if (channelSessionSet.size === 0) {
+        this.channelSessions.delete(session.channelId);
+      }
+    }
+
     return session;
   }
 
@@ -403,6 +420,20 @@ export class SessionManager {
     );
 
     return sessions;
+  }
+
+  /**
+   * 通過頻道 ID 獲取所有關聯的 Session（使用索引優化）
+   */
+  getSessionsByChannel(channelId: string): Session[] {
+    const sessionIds = this.channelSessions.get(channelId);
+    if (!sessionIds) {
+      return [];
+    }
+
+    return Array.from(sessionIds)
+      .map(id => this.activeSessions.get(id))
+      .filter((s): s is Session => !!s);
   }
 
   /**
@@ -602,6 +633,15 @@ export class SessionManager {
       if (session.isEnded()) {
         this.saveSession(session);
         this.activeSessions.delete(sessionId);
+
+        // 從頻道索引移除
+        const channelSessionSet = this.channelSessions.get(session.channelId);
+        if (channelSessionSet) {
+          channelSessionSet.delete(sessionId);
+          if (channelSessionSet.size === 0) {
+            this.channelSessions.delete(session.channelId);
+          }
+        }
       }
     }
   }

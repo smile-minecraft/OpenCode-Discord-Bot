@@ -371,18 +371,32 @@ export class QueueManager extends EventEmitter {
   // ==================== Private Methods ====================
 
   /**
-   * 按優先級插入任務
+   * 按優先級插入任務 - 使用二分查找優化
    */
   private insertTaskByPriority(task: QueueTask): void {
-    // 尋找第一個優先級低於新任務的位置
-    let insertIndex = this.queue.findIndex((t) => t.priority > task.priority);
-    
-    // 如果沒找到，插入末尾
-    if (insertIndex === -1) {
-      insertIndex = this.queue.length;
+    // 二分查找找到插入位置 - O(log n)
+    const index = this.binarySearchInsertIndex(task.priority);
+    this.queue.splice(index, 0, task);
+  }
+
+  /**
+   * 二分查找找到應該插入的位置
+   * 返回第一個優先級大於 targetPriority 的索引
+   */
+  private binarySearchInsertIndex(targetPriority: number): number {
+    let left = 0;
+    let right = this.queue.length;
+
+    while (left < right) {
+      const mid = Math.floor((left + right) / 2);
+      if (this.queue[mid].priority > targetPriority) {
+        left = mid + 1;
+      } else {
+        right = mid;
+      }
     }
-    
-    this.queue.splice(insertIndex, 0, task);
+
+    return left;
   }
 
   /**

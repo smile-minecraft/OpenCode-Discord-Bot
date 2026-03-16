@@ -136,24 +136,45 @@ function getErrorColor(severity: ErrorSeverity): number {
 }
 
 /**
+ * 生成錯誤 ID（用於追蹤）
+ */
+function generateErrorId(): string {
+  return `err_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+/**
  * 將錯誤格式化為 Discord Embed
  */
 export function formatErrorAsEmbed(error: Error, user?: User): EmbedBuilder {
   const severity = getErrorSeverity(error);
   const isOperational = error instanceof BotError && error.isOperational;
+  const isProduction = process.env.NODE_ENV === 'production';
   
   // 根據錯誤類型生成訊息
   let title: string;
   let description: string;
+  let errorId: string | undefined;
   
   if (!isOperational) {
     // 系統錯誤 - 隱藏詳細資訊
+    errorId = generateErrorId();
+    
     title = '⚠️ 系統錯誤';
     description = '發生了一個意外錯誤，請稍後再試。';
-    logger.error(`Unhandled error: ${error.message}`, { 
-      stack: error.stack,
-      userId: user?.id 
-    });
+    
+    if (isProduction) {
+      // 生產環境：僅記錄錯誤 ID 和訊息
+      logger.error(`[${errorId}] Unhandled error`, { 
+        message: error.message,
+        userId: user?.id 
+      });
+    } else {
+      // 開發環境：記錄完整堆疊
+      logger.error(`[${errorId}] Unhandled error`, { 
+        stack: error.stack,
+        userId: user?.id 
+      });
+    }
   } else {
     // 業務錯誤 - 顯示訊息
     switch (error.name) {
@@ -178,8 +199,12 @@ export function formatErrorAsEmbed(error: Error, user?: User): EmbedBuilder {
     .setColor(getErrorColor(severity))
     .setTimestamp();
 
+  // 添加錯誤 ID（如果是系統錯誤）
+  if (!isOperational && errorId) {
+    embed.setFooter({ text: `錯誤 ID: ${errorId}` });
+  }
   // 添加錯誤代碼（如果是 BotError）
-  if (error instanceof BotError) {
+  else if (error instanceof BotError) {
     embed.setFooter({ 
       text: `錯誤代碼: ${error.code}`,
       iconURL: undefined

@@ -8,6 +8,8 @@ export interface SessionData {
   sessionId: string;
   /** 關聯的 Discord 頻道 ID */
   channelId: string;
+  /** 關聯的 Discord 用戶 ID（Session 擁有者） */
+  userId: string;
   /** 關聯的 Discord Thread ID（如有） */
   threadId: string | null;
   /** OpenCode 內部 Session ID */
@@ -126,6 +128,7 @@ export interface ToolApproval {
 export class Session implements SessionData {
   sessionId: string;
   channelId: string;
+  userId: string;
   threadId: string | null;
   opencodeSessionId: string;
   status: SessionStatus;
@@ -144,9 +147,10 @@ export class Session implements SessionData {
   createdAt: string;
   updatedAt: string;
 
-  constructor(data: Partial<SessionData> & { sessionId: string; channelId: string }) {
+  constructor(data: Partial<SessionData> & { sessionId: string; channelId: string; userId: string }) {
     this.sessionId = data.sessionId;
     this.channelId = data.channelId;
+    this.userId = data.userId;
     this.threadId = data.threadId || null;
     this.opencodeSessionId = data.opencodeSessionId || '';
     this.status = data.status || 'pending';
@@ -321,6 +325,7 @@ export class Session implements SessionData {
     return {
       sessionId: this.sessionId,
       channelId: this.channelId,
+      userId: this.userId,
       threadId: this.threadId,
       opencodeSessionId: this.opencodeSessionId,
       status: this.status,

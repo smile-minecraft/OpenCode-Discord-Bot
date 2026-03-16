@@ -3,7 +3,12 @@
  * @description 提供測試所需的 mock 對象和輔助函數
  */
 
-import { vi, beforeEach, afterEach } from 'vitest';
+import { vi, beforeEach, afterEach, expect } from 'vitest';
+
+// 保存原始的 console 方法
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+const originalConsoleLog = console.log;
 
 // ============== Mock Discord.js 互動 ==============
 
@@ -88,12 +93,28 @@ export const mockFs = {
   statSync: vi.fn(() => ({ mtime: { getTime: () => Date.now() } })),
 };
 
-// ============== 全域鉤子 ==============
+// ============== Mock 輔助函數 ==============
 
-// 保存原始的 console 方法
-const originalConsoleError = console.error;
-const originalConsoleWarn = console.warn;
-const originalConsoleLog = console.log;
+/**
+ * 創建 console spy - 用於特定測試中抑制輸出
+ * 使用方式: 在特定測試的 beforeEach 中調用，在 afterEach 中調用 restoreConsole
+ */
+export function createConsoleSpy(): void {
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+}
+
+/**
+ * 恢復原始 console 方法
+ */
+export function restoreConsole(): void {
+  console.error = originalConsoleError;
+  console.warn = originalConsoleWarn;
+  console.log = originalConsoleLog;
+}
+
+// ============== 全域鉤子 ==============
 
 beforeEach(() => {
   // 重置所有 mock
@@ -101,21 +122,10 @@ beforeEach(() => {
   
   // 重置計時器
   vi.useRealTimers();
-
-  // 抑制所有 console 輸出，使測試輸出更乾淨
-  // 這樣錯誤處理測試中的 expected 錯誤日誌不會顯示在終端
-  vi.spyOn(console, 'error').mockImplementation(() => {});
-  vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.resetAllMocks();
-  
-  // 恢復原始的 console 方法
-  console.error = originalConsoleError;
-  console.warn = originalConsoleWarn;
-  console.log = originalConsoleLog;
 });
 
 // ============== 輔助斷言 ==============

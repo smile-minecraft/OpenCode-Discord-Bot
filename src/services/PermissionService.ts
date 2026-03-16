@@ -6,6 +6,7 @@
 import {
   ButtonInteraction,
   ChatInputCommandInteraction,
+  Client,
   GuildMember,
 } from 'discord.js';
 import type { PermissionLevel, Guild as GuildModel } from '../database/models/Guild.js';
@@ -77,6 +78,7 @@ export interface ToolApprovalRecord {
 export class PermissionService {
   private static instance: PermissionService;
   private database: Database;
+  private discordClient: Client | null = null;
   private approvalCallbacks: Map<string, (action: ApprovalAction) => void> = new Map();
 
   private constructor() {
@@ -91,6 +93,15 @@ export class PermissionService {
       PermissionService.instance = new PermissionService();
     }
     return PermissionService.instance;
+  }
+
+  /**
+   * 設置 Discord Client
+   * @param client Discord Client 實例
+   */
+  public setDiscordClient(client: Client): void {
+    this.discordClient = client;
+    logger.info('[PermissionService] Discord client has been set');
   }
 
   /**
@@ -490,14 +501,22 @@ export class PermissionService {
    * @param guild 伺服器
    * @param userId 用戶 ID
    */
-  private async getMember(_guild: GuildModel, _userId: string): Promise<GuildMember | null> {
+  private async getMember(guild: GuildModel, userId: string): Promise<GuildMember | null> {
     try {
-      // Access Discord client through global client or fetch from database
-      // Since GuildModel doesn't have a client property, we need to use a different approach
-      // For now, return null as we cannot fetch the member without Discord client access
-      // TODO: Implement proper Discord client access for PermissionService
-      return null;
-    } catch {
+      if (!this.discordClient) {
+        logger.warn('[PermissionService] Discord client not set');
+        return null;
+      }
+
+      const discordGuild = await this.discordClient.guilds.fetch(guild.guildId);
+      if (!discordGuild) {
+        logger.warn(`[PermissionService] Guild not found: ${guild.guildId}`);
+        return null;
+      }
+
+      return await discordGuild.members.fetch(userId);
+    } catch (error) {
+      logger.error('[PermissionService] Failed to fetch member:', error as Error | Record<string, unknown>);
       return null;
     }
   }

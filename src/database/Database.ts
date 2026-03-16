@@ -377,7 +377,10 @@ export class Database {
    * 建立 Session
    */
   async createSession(data: Partial<SessionData> & { sessionId: string; channelId: string }): Promise<Session> {
-    const session = new Session(data);
+    const session = new Session({
+      ...data,
+      userId: data.userId || 'unknown'
+    });
     const filePath = this.getSessionFilePath(session.sessionId);
     
     this.createBackup(filePath);

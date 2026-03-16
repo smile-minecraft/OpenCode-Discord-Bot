@@ -3,13 +3,10 @@
  * @description 執行 git worktree 命令，管理 Worktree 生命週期，與 GitHub API 整合
  */
 
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from 'discord.js';
-
-const execAsync = promisify(exec);
 
 // ============== 類型定義 ==============
 
@@ -98,21 +95,49 @@ export class GitWorktreeService {
    * @returns 執行結果
    */
   private async execGit(command: string): Promise<string> {
-    try {
-      const { stdout, stderr } = await execAsync(command, {
-        cwd: this.repoPath,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-      });
-      
-      if (stderr && !stderr.includes('warning:')) {
-        console.warn(`[GitWorktreeService] Git stderr: ${stderr}`);
-      }
-      
-      return stdout.trim();
-    } catch (error) {
-      const err = error as Error;
-      throw new GitWorktreeError(`Git command failed: ${err.message}`, 'EXEC_ERROR');
+    // 驗證命令不包含危險字符，防止 shell 注入 (CWE-78)
+    const dangerousPatterns = /[;&|`$(){}[\]\\]/;
+    if (dangerousPatterns.test(command)) {
+      throw new GitWorktreeError('Invalid command characters detected', 'INVALID_COMMAND');
     }
+
+    // 使用 spawn 替代 exec，避免 shell 注入
+    return new Promise((resolve, reject) => {
+      const args = command.split(' ').filter(arg => arg.length > 0);
+      const child = spawn('git', args.slice(1), {
+        cwd: this.repoPath,
+        timeout: 30000,
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => {
+        stdout += data;
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data;
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout.trim());
+        } else {
+          reject(new GitWorktreeError(`Git failed: ${stderr}`, 'GIT_ERROR'));
+        }
+      });
+
+      child.on('error', (error) => {
+        reject(new GitWorktreeError(`Git command error: ${error.message}`, 'EXEC_ERROR'));
+      });
+
+      // 設置超時，防止請求掛起
+      setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new GitWorktreeError('Git command timed out', 'TIMEOUT'));
+      }, 30000);
+    });
   }
 
   // ============== Worktree 列表 ==============
@@ -326,16 +351,43 @@ export class GitWorktreeService {
    * @param force 是否強制刪除（忽略未提交的更改）
    */
   async deleteWorktree(worktreePath: string, force = false): Promise<void> {
-    // 驗證路徑（防止意外刪除重要目錄）
+    // 安全檢查 1: 解析路徑
     const resolvedPath = path.resolve(worktreePath);
     const repoResolvedPath = path.resolve(this.repoPath);
-    
+
+    // 安全檢查 2: 不能刪除主倉庫
     if (resolvedPath === repoResolvedPath) {
       throw new GitWorktreeError('Cannot delete main repository', 'CANNOT_DELETE_MAIN');
     }
 
-    if (!resolvedPath.includes('worktree')) {
-      throw new GitWorktreeError('Worktree path must contain "worktree" in name', 'INVALID_PATH');
+    // 安全檢查 3: 必須在倉庫目錄下（防止 ../etc/worktree 攻擊）
+    if (!resolvedPath.startsWith(repoResolvedPath)) {
+      throw new GitWorktreeError('Path must be within repository', 'INVALID_PATH');
+    }
+
+    // 安全檢查 4: 路徑必須包含 worktree（使用 basename 而非 includes）
+    const pathBasename = path.basename(resolvedPath);
+    if (!pathBasename.includes('worktree')) {
+      throw new GitWorktreeError('Path must contain "worktree"', 'INVALID_PATH');
+    }
+
+    // 安全檢查 5: 防止路徑遍歷攻擊
+    const normalizedPath = path.normalize(resolvedPath);
+    if (normalizedPath.includes('..')) {
+      throw new GitWorktreeError('Path traversal detected', 'PATH_TRAVERSAL');
+    }
+
+    // 安全檢查 6: 確保路徑存在且是目錄
+    try {
+      const stats = await fs.stat(resolvedPath);
+      if (!stats.isDirectory()) {
+        throw new GitWorktreeError('Path is not a directory', 'NOT_DIRECTORY');
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new GitWorktreeError('Path does not exist', 'PATH_NOT_FOUND');
+      }
+      throw error;
     }
 
     try {

@@ -11,7 +11,7 @@
  * - session:passthrough:toggle - 切換 Passthrough 模式
  */
 
-import { ButtonInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { ButtonInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } from 'discord.js';
 import { ButtonHandlerConfig } from '../types/handlers.js';
 import { SessionManager, getSessionManager } from '../services/SessionManager.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
@@ -216,8 +216,6 @@ export class SessionButtonHandler {
    * 處理停止按鈕（帶 Session ID）
    */
   async handleStopWithId(interaction: ButtonInteraction): Promise<void> {
-    await interaction.deferReply();
-
     // 提取 sessionId
     const sessionId = this.extractSessionId(interaction.customId, 'stop');
 
@@ -227,31 +225,36 @@ export class SessionButtonHandler {
       return;
     }
 
-    try {
-      const session = await this.sessionManager.abortSession(sessionId);
+    // 先獲取 Session 進行權限驗證
+    const session = this.sessionManager.getSession(sessionId);
 
-      if (!session) {
-        await interaction.editReply({
-          content: `找不到 ID 為 \`${sessionId}\` 的 Session`,
+    if (!session) {
+      await interaction.reply({
+        content: '❌ Session 不存在',
+        ephemeral: true
+      });
+      return;
+    }
+
+    // 驗證用戶權限 - 必須是 Session 擁有者或管理員
+    if ((session as any).userId !== interaction.user.id) {
+      // 檢查是否為管理員
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      if (!member?.permissions.has(PermissionFlagsBits.Administrator)) {
+        await interaction.reply({
+          content: '❌ 您無權操作此 Session',
+          ephemeral: true
         });
         return;
       }
-
-      const embed = SessionStatusEmbedBuilder.createSessionAbortedCard({
-        sessionId: session.sessionId,
-        duration: session.getDuration(),
-      });
-
-      await interaction.editReply({
-        embeds: [embed],
-        components: [],
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
-      await interaction.editReply({
-        content: `❌ 停止 Session 失敗: ${errorMessage}`,
-      });
     }
+
+    await this.sessionManager.abortSession(sessionId);
+
+    await interaction.reply({
+      content: `✅ Session \`${sessionId}\` 已停止`,
+      ephemeral: true
+    });
   }
 
   /**

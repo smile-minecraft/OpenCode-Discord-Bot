@@ -15,6 +15,7 @@ import {
 import { PermissionService, type ToolExecutionRequest, type ApprovalAction, type ToolApprovalRecord } from './PermissionService.js';
 import { getOpenCodeClient } from './OpenCodeClient.js';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
+import { getSessionManager } from './SessionManager.js';
 import { log as logger } from '../utils/logger.js';
 
 /**
@@ -340,6 +341,14 @@ export class ToolApprovalService {
     request: ToolExecutionRequest, 
     approved: boolean
   ): Promise<void> {
+    // 檢查 Session 狀態（使用內存中的活躍 session）
+    const sessionManager = getSessionManager();
+    const activeSession = sessionManager.getSession(request.sessionId);
+    if (!activeSession || activeSession.status !== 'running') {
+      logger.warn(`Session ${request.sessionId} is not running, skipping approval`);
+      return;
+    }
+
     // 從資料庫獲取 session 資訊
     const db = SQLiteDatabase.getInstance();
     if (!db.isReady()) {
