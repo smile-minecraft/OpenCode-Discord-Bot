@@ -408,6 +408,15 @@ export class SSEClient {
   setReconnectDelay(delay: number): void {
     this.reconnectDelay = delay;
   }
+
+  /**
+   * 清理資源
+   * @description 與 disconnect() 等效，用於釋放資源
+   */
+  dispose(): void {
+    this.disconnect();
+    this.removeAllHandlers();
+  }
 }
 
 // ============== 單例實例 ==============

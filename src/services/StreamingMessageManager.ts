@@ -10,7 +10,8 @@ import {
   Message,
   EmbedBuilder,
 } from 'discord.js';
-import { SSEClient, SSEEvent, MessageEventData, SessionCompleteEventData, ErrorEventData } from './SSEClient.js';
+import { SSEEvent, MessageEventData, SessionCompleteEventData, ErrorEventData } from './SSEClient.js';
+import { createEventStreamAdapter, IEventStreamAdapter } from './EventStreamFactory.js';
 import { Session } from '../database/models/Session.js';
 import logger from '../utils/logger.js';
 
@@ -114,8 +115,8 @@ class DiscordRateLimiter {
  * @description 管理 SSE 串流事件與 Discord 訊息的同步更新
  */
 export class StreamingMessageManager {
-  /** SSE 客戶端 */
-  private sseClient: SSEClient;
+  /** Event Stream 適配器 */
+  private eventStreamAdapter: IEventStreamAdapter;
 
   /** 活躍的串流會話映射 */
   private activeStreams: Map<string, StreamingSession> = new Map();
@@ -131,10 +132,10 @@ export class StreamingMessageManager {
 
   /**
    * 建構子
-   * @param sseClient SSE 客戶端實例
+   * @param eventStreamAdapter Event Stream 適配器（可選，預設使用工廠創建）
    */
-  constructor(sseClient: SSEClient) {
-    this.sseClient = sseClient;
+  constructor(eventStreamAdapter?: IEventStreamAdapter) {
+    this.eventStreamAdapter = eventStreamAdapter || createEventStreamAdapter();
     this.setupEventHandlers();
     this.startUpdateLoop();
   }
@@ -179,7 +180,7 @@ export class StreamingMessageManager {
     // 連接到 SSE
     const opencodeSessionId = session.opencodeSessionId;
     if (opencodeSessionId) {
-      this.sseClient.connect(port, opencodeSessionId);
+      this.eventStreamAdapter.connect(port, opencodeSessionId);
       logger.info(`[StreamingMessageManager] 開始串流: ${streamKey}, port: ${port}, sessionId: ${opencodeSessionId}`);
     } else {
       logger.warn(`[StreamingMessageManager] Session ${session.sessionId} 缺少 opencodeSessionId`);
@@ -229,30 +230,30 @@ export class StreamingMessageManager {
    */
   private setupEventHandlers(): void {
     // 監聽 AI 回應片段
-    this.sseClient.on('message', (event: SSEEvent) => {
-      const data = event.data as MessageEventData;
+    this.eventStreamAdapter.on('message', (event: unknown) => {
+      const data = (event as SSEEvent).data as MessageEventData;
       this.handleMessageEvent(data);
     });
 
     // 監聽 Session 完成
-    this.sseClient.on('session_complete', (event: SSEEvent) => {
-      const data = event.data as SessionCompleteEventData;
+    this.eventStreamAdapter.on('session_complete', (event: unknown) => {
+      const data = (event as SSEEvent).data as SessionCompleteEventData;
       this.handleSessionComplete(data.sessionId);
     });
 
     // 監聽錯誤
-    this.sseClient.on('error', (event: SSEEvent) => {
-      const data = event.data as ErrorEventData;
+    this.eventStreamAdapter.on('error', (event: unknown) => {
+      const data = (event as SSEEvent).data as ErrorEventData;
       logger.error(`[StreamingMessageManager] SSE 錯誤:`, data);
     });
 
     // 監聽連接
-    this.sseClient.on('connected', () => {
+    this.eventStreamAdapter.on('connected', () => {
       logger.debug('[StreamingMessageManager] SSE 連接成功');
     });
 
     // 監聽斷開
-    this.sseClient.on('disconnected', () => {
+    this.eventStreamAdapter.on('disconnected', () => {
       logger.debug('[StreamingMessageManager] SSE 連接已關閉');
     });
   }
@@ -499,22 +500,21 @@ let streamingManagerInstance: StreamingMessageManager | null = null;
 
 /**
  * 獲取 StreamingMessageManager 單例實例
+ * @description 自動使用工廠創建的 EventStreamAdapter
  */
 export function getStreamingMessageManager(): StreamingMessageManager {
   if (!streamingManagerInstance) {
-    const sseClient = new SSEClient();
-    streamingManagerInstance = new StreamingMessageManager(sseClient);
+    streamingManagerInstance = new StreamingMessageManager();
   }
   return streamingManagerInstance;
 }
 
 /**
  * 初始化 StreamingMessageManager
- * @param sseClient SSE 客戶端（可選）
+ * @param eventStreamAdapter Event Stream 適配器（可選，預設使用工廠創建）
  */
-export function initializeStreamingMessageManager(sseClient?: SSEClient): StreamingMessageManager {
-  const client = sseClient || new SSEClient();
-  streamingManagerInstance = new StreamingMessageManager(client);
+export function initializeStreamingMessageManager(eventStreamAdapter?: IEventStreamAdapter): StreamingMessageManager {
+  streamingManagerInstance = new StreamingMessageManager(eventStreamAdapter);
   return streamingManagerInstance;
 }
 

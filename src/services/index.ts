@@ -12,6 +12,10 @@ export type { SessionManager, CreateSessionOptions, SessionExecutionResult } fro
 export { SSEClient, getSSEClient, initializeSSEClient } from './SSEClient.js';
 export type { SSEEvent, SSEEventType, SSEEventHandler, MessageEventData, ToolRequestEventData, ConnectedEventData, ErrorEventData, SessionCompleteEventData } from './SSEClient.js';
 
+// Event Stream Factory
+export { createEventStreamAdapter, getEventStreamAdapter, initializeEventStreamAdapter, getAdapterType } from './EventStreamFactory.js';
+export type { IEventStreamAdapter, ISDKEventStreamAdapter, EventStreamEventHandler } from './EventStreamFactory.js';
+
 // Streaming Message Manager
 export { StreamingMessageManager, getStreamingMessageManager, initializeStreamingMessageManager } from './StreamingMessageManager.js';
 

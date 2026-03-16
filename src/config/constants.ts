@@ -113,10 +113,19 @@ export const DISCORD_CONFIG = {
   STREAM_UPDATE_INTERVAL: loadedConfig?.discord?.streamUpdateInterval ?? DEFAULTS.DISCORD.STREAM_UPDATE_INTERVAL,
 };
 
+/**
+ * 功能開關配置
+ */
+export const FEATURE_FLAGS = {
+  /** 使用 SDK 適配器（而非 SSE Client） */
+  USE_SDK_ADAPTER: process.env.USE_SDK_ADAPTER === 'true',
+};
+
 export default {
   OPENCODE_API,
   OPENCODE_SERVER,
   MODEL_CONFIG,
   TIMEOUTS,
   DISCORD_CONFIG,
+  FEATURE_FLAGS,
 };
