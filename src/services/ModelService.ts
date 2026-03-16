@@ -48,19 +48,23 @@ function convertToModelDefinition(modelId: string): ModelDefinition {
     return existingModel;
   }
   
-  // 如果靜態數據中沒有，創建簡化版本
-  const providerMap: Record<string, ModelProvider> = {
-    opencode: 'anthropic',
-    'opencode-go': 'anthropic',
-    'github-copilot': 'anthropic',
-    google: 'google',
+  // 有效的提供商映射（保持原始名稱以匹配 getProviders 返回的 ID）
+  const validProviders: Record<string, ModelProvider> = {
+    anthropic: 'anthropic',
     openai: 'openai',
+    google: 'google',
     xai: 'xai',
     cohere: 'cohere',
     mistral: 'mistral',
+    // 動態提供商 - 保留原始名稱
+    opencode: 'opencode',
+    'opencode-go': 'opencode-go',
+    'opencode-zen': 'opencode-zen',
+    'github-copilot': 'github-copilot',
   };
   
-  const mappedProvider = providerMap[provider] || provider as ModelProvider;
+  // 使用有效的提供商名稱，如果不在列表中則保留原始名稱
+  const mappedProvider = validProviders[provider] || provider as ModelProvider;
   
   // 根據名稱推斷類別
   let category: 'fast' | 'balanced' | 'powerful' = 'balanced';
@@ -93,8 +97,19 @@ async function fetchModelsFromProvider(providerId: OpenCodeProviderType, apiKey:
   try {
     const client = createOpenCodeCloudClient(apiKey, providerId);
     const models = await client.getModels();
-    logger.info(`[ModelService] Fetched ${models.length} models from provider ${providerId}`);
-    return models;
+    
+    const formattedModels = models.map(id => {
+      // 如果已經包含 /，假設它已經有前綴了
+      if (id.includes('/')) return id;
+      
+      // 否則添加前綴
+      if (providerId === 'opencode-zen') return `opencode/${id}`;
+      if (providerId === 'opencode-go') return `opencode-go/${id}`;
+      return `${providerId}/${id}`;
+    });
+    
+    logger.info(`[ModelService] Fetched ${formattedModels.length} models from provider ${providerId}`);
+    return formattedModels;
   } catch (error) {
     logger.error(`[ModelService] Failed to fetch models from provider ${providerId}`, {
       error: error instanceof Error ? error.message : String(error),
@@ -107,9 +122,10 @@ async function fetchModelsFromProvider(providerId: OpenCodeProviderType, apiKey:
  * 獲取可用的模型列表（從 connected providers 獲取或使用 fallback）
  * @param guildId - Discord Guild ID
  * @param useCache - 是否使用緩存（默認 true）
+ * @param allowFallback - 是否允許使用靜態 fallback（默認 false）
  * @returns 模型定義數組
  */
-export async function getAvailableModels(guildId?: string, useCache: boolean = true): Promise<ModelDefinition[]> {
+export async function getAvailableModels(guildId?: string, useCache: boolean = true, allowFallback: boolean = false): Promise<ModelDefinition[]> {
   const cacheKey = guildId || 'global';
   
   // 檢查緩存
@@ -167,30 +183,50 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
         return allModels;
       }
       
-      logger.info('[ModelService] No connected providers, using static fallback', { guildId });
+      logger.info('[ModelService] No connected providers found', { guildId });
+      
+      // 如果沒有允許 fallback，拋出錯誤
+      if (!allowFallback) {
+        throw new Error('No connected providers found. Please configure providers using /connect command first.');
+      }
     } catch (error) {
       logger.error('[ModelService] Error fetching models from providers', {
         error: error instanceof Error ? error.message : String(error),
         guildId,
       });
+      
+      // 如果沒有允許 fallback，拋出錯誤
+      if (!allowFallback) {
+        throw new Error('Failed to fetch models from providers. Please check your provider configuration.');
+      }
+    }
+  } else {
+    // 如果沒有提供 guildId 且不允許 fallback，拋出錯誤
+    if (!allowFallback) {
+      throw new Error('No guild ID provided and dynamic loading is not available. Please configure providers using /connect command first.');
     }
   }
   
-  // 如果沒有 guildId 或無法從 providers 獲取，使用靜態 fallback
-  const fallbackModels = MODELS;
+  // 只有在允許的情況下才使用靜態 fallback
+  if (allowFallback) {
+    const fallbackModels = MODELS;
+    
+    // 更新緩存
+    modelCacheByGuild.set(cacheKey, {
+      data: fallbackModels,
+      timestamp: Date.now(),
+    });
+    
+    logger.info('[ModelService] Using static model list as fallback', { 
+      guildId,
+      count: fallbackModels.length 
+    });
+    
+    return fallbackModels;
+  }
   
-  // 更新緩存
-  modelCacheByGuild.set(cacheKey, {
-    data: fallbackModels,
-    timestamp: Date.now(),
-  });
-  
-  logger.info('[ModelService] Using static model list as fallback', { 
-    guildId,
-    count: fallbackModels.length 
-  });
-  
-  return fallbackModels;
+  // 如果到達這裡，表示不允許 fallback 且無法動態獲取
+  throw new Error('No available models. Please configure providers using /connect command first.');
 }
 
 /**
@@ -252,35 +288,44 @@ export async function getModelsByCategory(category: 'fast' | 'balanced' | 'power
 }
 
 /**
- * 獲取所有提供商列表（從 connected providers 或靜態數據提取）
- * @param guildId - Discord Guild ID（可選）
+ * 獲取所有提供商列表（從 connected providers 動態獲取）
+ * @param guildId - Discord Guild ID（必須提供）
  * @returns 排序後的提供商名稱數組
+ * @throws Error 當無法獲取 providers 時
  */
 export async function getProviders(guildId?: string): Promise<string[]> {
-  // 如果有 guildId，嘗試從 connected providers 獲取
-  if (guildId) {
-    try {
-      const providerService = ProviderService.getInstance();
-      const providers = await providerService.getProviders(guildId);
-      
-      const connectedProviders = Object.entries(providers)
-        .filter(([, conn]) => conn.connected)
-        .map(([id]) => id);
-      
-      if (connectedProviders.length > 0) {
-        return connectedProviders.sort();
-      }
-    } catch (error) {
-      logger.error('[ModelService] Error fetching providers', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  // 必須提供 guildId
+  if (!guildId) {
+    throw new Error('No guild ID provided. Please use this command in a server context.');
   }
-  
-  // 回退到靜態數據
-  const models = await getAvailableModels(guildId);
-  const providers = new Set(models.map(m => m.provider));
-  return Array.from(providers).sort();
+
+  try {
+    const providerService = ProviderService.getInstance();
+    const providers = await providerService.getProviders(guildId);
+    
+    const connectedProviders = Object.entries(providers)
+      .filter(([, conn]) => conn.connected)
+      .map(([id]) => id);
+    
+    if (connectedProviders.length > 0) {
+      return connectedProviders.sort();
+    }
+    
+    // 沒有 connected providers - 報錯而不是 fallback
+    throw new Error('No connected providers found. Please configure providers using `/connect` command first.');
+    
+  } catch (error) {
+    // 如果已經是自定义错误，直接抛出
+    if (error instanceof Error && error.message.includes('No connected providers')) {
+      throw error;
+    }
+    
+    logger.error('[ModelService] Error fetching providers', {
+      error: error instanceof Error ? error.message : String(error),
+      guildId,
+    });
+    throw new Error(`Failed to fetch providers: ${error instanceof Error ? error.message : String(error)}. Please check your provider configuration using /connect command.`);
+  }
 }
 
 /**
@@ -291,7 +336,19 @@ export async function getProviders(guildId?: string): Promise<string[]> {
  */
 export async function getModelsByProviderDynamic(provider: string, guildId?: string): Promise<ModelDefinition[]> {
   const models = await getAvailableModels(guildId);
-  return models.filter(m => m.provider === provider);
+  
+  // 靈活匹配：支持精確匹配和 provider ID 別名映射
+  // 例如：用戶選擇 "opencode-go" 時，應該匹配 provider 為 "opencode-go" 的模型
+  const providerAliases: Record<string, string[]> = {
+    'opencode-go': ['opencode-go'],
+    'opencode': ['opencode'],
+    'opencode-zen': ['opencode-zen'],
+    'github-copilot': ['github-copilot'],
+  };
+  
+  const aliases = providerAliases[provider] || [provider];
+  
+  return models.filter(m => aliases.includes(m.provider));
 }
 
 /**

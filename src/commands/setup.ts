@@ -10,12 +10,14 @@ import {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  AutocompleteInteraction,
 } from 'discord.js';
 
 import { Database } from '../database/index.js';
-import { MODELS, DEFAULT_MODEL } from '../models/ModelData.js';
+import { DEFAULT_MODEL, getProviderDisplayName } from '../models/ModelData.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
+import { log as logger } from '../utils/logger.js';
 
 // ============== 指令定義 ==============
 
@@ -50,14 +52,9 @@ const command = new SlashCommandBuilder()
       .addStringOption((option) =>
         option
           .setName('model_id')
-          .setDescription('選擇預設模型')
+          .setDescription('選擇預設模型（請先使用 /connect 連接 API 提供商）')
           .setRequired(true)
-          .addChoices(
-            ...MODELS.slice(0, 25).map((m) => ({
-              name: `${m.name} (${m.provider})`,
-              value: m.id,
-            }))
-          )
+          .setAutocomplete(true)
       )
   )
   .addSubcommand((subcommand) =>
@@ -306,10 +303,25 @@ async function handleOpencodePath(interaction: ChatInputCommandInteraction): Pro
  */
 async function handleModel(interaction: ChatInputCommandInteraction): Promise<void> {
   const modelId = interaction.options.getString('model_id', true);
+  const guildId = interaction.guildId;
   
-  // 嘗試從 CLI 獲取動態模型列表，如果失敗則使用靜態列表
-  const models = await getAvailableModels();
-  const model = models.find(m => m.id === modelId);
+  if (!guildId) {
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(Colors.ERROR)
+          .setTitle('❌ 無法使用')
+          .setDescription('此指令只能在伺服器中使用，請在伺服器頻道中使用。'),
+      ],
+      flags: ['Ephemeral'],
+    });
+    return;
+  }
+  
+  // 從 connected providers 動態獲取模型列表
+  try {
+    const models = await getAvailableModels(guildId);
+    const model = models.find(m => m.id === modelId);
 
   if (!model) {
     await interaction.reply({
@@ -325,24 +337,41 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
   }
 
   // 保存模型設定
-  await saveConfig(interaction.guildId!, 'defaultModel', modelId);
+    await saveConfig(guildId, 'defaultModel', modelId);
 
-  const embed = new EmbedBuilder()
-    .setColor(Colors.SUCCESS)
-    .setTitle('✅ 預設 AI 模型已設定')
-    .setDescription(`已將預設模型設定為 **${model.name}**`)
-    .addFields(
-      { name: '🤖 模型', value: model.name, inline: true },
-      { name: '🏢 提供商', value: model.provider, inline: true },
-      { name: '💰 定價', value: `$${model.pricing.input}/M 輸入 | $${model.pricing.output}/M 輸出`, inline: true }
-    )
-    .setFooter({ text: '新對話將使用此模型' })
-    .setTimestamp();
+    const embed = new EmbedBuilder()
+      .setColor(Colors.SUCCESS)
+      .setTitle('✅ 預設 AI 模型已設定')
+      .setDescription(`已將預設模型設定為 **${model.name}**`)
+      .addFields(
+        { name: '🤖 模型', value: model.name, inline: true },
+        { name: '🏢 提供商', value: model.provider, inline: true },
+        { name: '💰 定價', value: `$${model.pricing.input}/M 輸入 | $${model.pricing.output}/M 輸出`, inline: true }
+      )
+      .setFooter({ text: '新對話將使用此模型' })
+      .setTimestamp();
 
-  await interaction.reply({
-    embeds: [embed],
-    flags: ['Ephemeral'],
-  });
+    await interaction.reply({
+      embeds: [embed],
+      flags: ['Ephemeral'],
+    });
+  } catch (error) {
+    console.error('Error in handleModel:', error);
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(Colors.ERROR)
+          .setTitle('❌ 無法設定模型')
+          .setDescription('目前沒有已連接的 AI 提供商。請先使用 `/connect` 指令連接您的 API 提供商，然後再使用此指令。')
+          .addFields({
+            name: '📝 說明',
+            value: '使用 `/connect` 指令可以連接您的 OpenAI、Anthropic、Google 等 API 提供商。',
+            inline: false,
+          }),
+      ],
+      flags: ['Ephemeral'],
+    });
+  }
 }
 
 /**
@@ -473,7 +502,69 @@ async function saveConfig(guildId: string, key: string, value: string): Promise<
   }
 }
 
+// ============== Autocomplete 處理 ==============
+
+/**
+ * 處理 Setup 指令的 Autocomplete 交互
+ * @param interaction - Autocomplete 交互實例
+ */
+async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const focusedOption = interaction.options.getFocused(true);
+  
+  // 只處理 model_id 選項
+  if (focusedOption.name !== 'model_id') {
+    await interaction.respond([]);
+    return;
+  }
+  
+  const query = focusedOption.value.toLowerCase();
+  const guildId = interaction.guildId ?? undefined;
+  
+  // 如果沒有 guildId，返回錯誤提示
+  if (!guildId) {
+    await interaction.respond([
+      { name: '⚠️ 請在伺服器中使用此指令', value: '' }
+    ]);
+    return;
+  }
+  
+  try {
+    // 獲取可用模型列表（動態從 providers）
+    const models = await getAvailableModels(guildId);
+    
+    if (models.length === 0) {
+      await interaction.respond([
+        { name: '⚠️ 沒有可用的模型，請檢查 API 連接', value: '' }
+      ]);
+      return;
+    }
+    
+    // 根據輸入過濾模型
+    const filtered = models.filter((model) => {
+      const searchText = `${model.id} ${model.name} ${model.provider}`.toLowerCase();
+      return searchText.includes(query);
+    });
+    
+    // 限制最多 25 個選項（Discord 限制）
+    const limited = filtered.slice(0, 25);
+    
+    // 構建選項
+    const choices = limited.map((model) => ({
+      name: `${getProviderDisplayName(model.provider)} - ${model.name}`,
+      value: model.id,
+    }));
+    
+    await interaction.respond(choices);
+  } catch (error) {
+    // 如果沒有 providers 連接，返回提示選項
+    logger.error('[Setup] Autocomplete error', { error: error instanceof Error ? error.message : String(error) });
+    await interaction.respond([
+      { name: '⚠️ 請先使用 /connect 連接 API 提供商', value: '' }
+    ]);
+  }
+}
+
 // ============== 導出 ==============
 
-export { command, execute };
-export default { command, execute };
+export { command, execute, handleAutocomplete };
+export default { command, execute, handleAutocomplete };

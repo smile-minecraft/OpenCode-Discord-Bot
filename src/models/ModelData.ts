@@ -3,8 +3,8 @@
  * @description 定義所有可用的 AI 模型及其元數據
  */
 
-// 模型供應商
-export type ModelProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'cohere' | 'mistral';
+// 模型供應商（支援靜態和動態提供商）
+export type ModelProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'cohere' | 'mistral' | 'opencode' | 'opencode-go' | 'opencode-zen' | 'github-copilot';
 
 // 模型類型
 export type ModelCategory = 'fast' | 'balanced' | 'powerful';
@@ -243,7 +243,7 @@ export function getModelsByProvider(): Map<ModelProvider, ModelDefinition[]> {
 }
 
 // 獲取提供商顯示名稱
-export function getProviderDisplayName(provider: ModelProvider): string {
+export function getProviderDisplayName(provider: string): string {
   const names: Record<string, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
@@ -254,6 +254,7 @@ export function getProviderDisplayName(provider: ModelProvider): string {
     // 支援動態模型的 provider
     opencode: 'OpenCode',
     'opencode-go': 'OpenCode Go',
+    'opencode-zen': 'OpenCode Zen',
     'github-copilot': 'GitHub Copilot',
   };
   return names[provider] || 'Other'; // 預設名稱
@@ -270,8 +271,8 @@ export function getModelsByCategory(category: ModelCategory): ModelDefinition[] 
 }
 
 // 導出獲取動態模型的函數（延遲加載以避免循環依賴）
-export async function getAvailableModelsAsync(): Promise<ModelDefinition[]> {
+export async function getAvailableModelsAsync(guildId?: string, allowFallback: boolean = false): Promise<ModelDefinition[]> {
   // 動態導入避免循環依賴
   const { getAvailableModels } = await import('../services/ModelService.js');
-  return getAvailableModels();
+  return getAvailableModels(guildId, true, allowFallback);
 }

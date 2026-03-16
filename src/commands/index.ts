@@ -33,4 +33,4 @@ export {
 } from './voice.js';
 
 // Setup Command
-export { command as setupCommand, execute as handleSetupCommand } from './setup.js';
+export { command as setupCommand, execute as handleSetupCommand, handleAutocomplete as handleSetupAutocomplete } from './setup.js';

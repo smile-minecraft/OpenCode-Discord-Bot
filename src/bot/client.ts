@@ -26,6 +26,9 @@ import {
   type ButtonInteraction,
   type AutocompleteInteraction,
   EmbedBuilder,
+  StringSelectMenuOptionBuilder,
+  StringSelectMenuBuilder,
+  ActionRowBuilder,
 } from 'discord.js';
 
 // Handlers
@@ -54,7 +57,7 @@ import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js
 import { createVoiceCommand, handleVoiceCommand } from '../commands/voice.js';
 import { permissionCommand, executePermissionCommand } from '../commands/permission.js';
 import { command as helpCommand, execute as helpExecute } from '../commands/help.js';
-import { setupCommand, handleSetupCommand } from '../commands/index.js';
+import { setupCommand, handleSetupCommand, handleSetupAutocomplete } from '../commands/index.js';
 import { connectCommand, handleConnectCommand } from '../commands/connect.js';
 
 // Models data
@@ -780,54 +783,86 @@ export class DiscordClient extends Client {
       customId: 'model:provider:select',
       callback: async (interaction) => {
         const provider = interaction.values[0];
+        const guildId = interaction.guildId ?? undefined;
         
         // Step 2: 顯示該提供商的所有模型
-        const models = await getModelsByProviderDynamic(provider);
-        
-        if (models.length === 0) {
+        try {
+          const models = await getModelsByProviderDynamic(provider, guildId);
+          
+          if (models.length === 0) {
+            await interaction.update({
+              embeds: [
+                new EmbedBuilder()
+                  .setColor(Colors.ERROR)
+                  .setTitle('❌ 沒有模型')
+                  .setDescription(`提供商 "${provider}" 沒有可用的模型`)
+              ],
+              components: []
+            });
+            return;
+          }
+          
+          // 建立模型列表 Embed
+          const embed = new EmbedBuilder()
+            .setColor(Colors.INFO)
+            .setTitle(`🤖 ${getProviderDisplayName(provider as any)} 模型列表`)
+            .setDescription(`以下是 ${getProviderDisplayName(provider as any)} 提供的所有模型：`);
+          
+          // 顯示所有模型
+          const modelList = models
+            .map((m) => `• \`${m.id}\` - ${m.description || m.name}`)
+            .join('\n');
+            
+          // 如果列表太長，截斷它
+          const MAX_FIELD_VALUE = 1024;
+          const truncatedList = modelList.length > MAX_FIELD_VALUE 
+            ? modelList.substring(0, MAX_FIELD_VALUE - 20) + '\n... (更多模型)'
+            : modelList;
+            
+          embed.addFields({
+            name: '可用模型',
+            value: truncatedList,
+            inline: false
+          });
+          
+          // 建立模型選擇選單
+          const modelOptions = models.slice(0, 25).map(m => 
+            new StringSelectMenuOptionBuilder()
+              .setLabel(m.name.substring(0, 100))
+              .setValue(m.id)
+              .setDescription((m.description || '無描述').substring(0, 100))
+          );
+          
+          const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId('model:info:select')
+            .setPlaceholder('選擇模型查看詳細資訊...')
+            .addOptions(modelOptions);
+            
+          const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+          
+          await interaction.update({
+            embeds: [embed],
+            components: [actionRow]
+          });
+        } catch (error) {
+          logger.error('[SelectMenuHandler] Error fetching models by provider', {
+            error: error instanceof Error ? error.message : String(error),
+            provider,
+            guildId
+          });
+          
           await interaction.update({
             embeds: [
               new EmbedBuilder()
                 .setColor(Colors.ERROR)
-                .setTitle('❌ 沒有模型')
-                .setDescription(`提供商 "${provider}" 沒有可用的模型`)
+                .setTitle('❌ 無法獲取模型列表')
+                .setDescription('無法獲取該提供商的模型列表。請確保您已使用 `/connect` 指令正確配置了該提供商。')
             ],
             components: []
           });
-          return;
         }
-        
-        // 建立模型列表 Embed
-        const embed = new EmbedBuilder()
-          .setColor(Colors.INFO)
-          .setTitle(`🤖 ${getProviderDisplayName(provider as any)} 模型列表`)
-          .setDescription(`以下是 ${getProviderDisplayName(provider as any)} 提供的所有模型：`);
-        
-        // 顯示所有模型
-        const modelList = models
-          .map((m) => `• \`${m.id}\` - ${m.description || m.name}`)
-          .join('\n');
-        
-        // Discord field value limit is 1024, so we need to truncate if needed
-        const MAX_FIELD_VALUE = 1024;
-        const truncatedValue = modelList.length > MAX_FIELD_VALUE
-          ? modelList.substring(0, MAX_FIELD_VALUE - 20) + '\n... (更多模型)'
-          : modelList;
-        
-        embed.addFields({
-          name: `📋 模型列表 (${models.length})`,
-          value: truncatedValue,
-          inline: false,
-        });
-        
-        embed.setFooter({ text: '點擊模型 ID 可複製到剪貼簿' });
-        
-        await interaction.update({
-          embeds: [embed],
-          components: []
-        });
       },
-      description: '提供商選擇選單 - 顯示該提供商的模型',
+      description: '模型提供商選擇選單',
     });
 
     // === Agent SelectMenu Handlers ===
@@ -1077,6 +1112,9 @@ export class DiscordClient extends Client {
           break;
         case 'agent':
           await handleAgentAutocomplete(interaction);
+          break;
+        case 'setup':
+          await handleSetupAutocomplete(interaction);
           break;
         case 'session':
           // 處理 session start 的 model 選項自動完成

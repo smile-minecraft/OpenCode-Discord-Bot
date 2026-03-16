@@ -212,6 +212,16 @@ export class OpenCodeCloudClient {
    */
   async validateApiKey(): Promise<ValidationResult> {
     try {
+      // 對於 OpenCode 提供商，/models 端點可能返回 404，
+      // 即使返回了 fallback 模型，我們也需要確保 API Key 是有效的
+      if (this.provider.id.startsWith('opencode')) {
+        const chatValidation = await this.validateWithChatCompletion();
+        if (chatValidation.valid) {
+          return chatValidation; // 已經包含測試模型，直接返回
+        }
+        return chatValidation; // 驗證失敗
+      }
+
       // 嘗試獲取模型列表來驗證 API Key
       const models = await this.getModels();
       
@@ -220,6 +230,11 @@ export class OpenCodeCloudClient {
           valid: true,
           models: models.slice(0, 5), // 只返回前5個模型
         };
+      }
+
+      // 如果模型列表為空且不是 opencode，嘗試使用 Chat Completion 進行替代驗證
+      if (!this.provider.id.startsWith('opencode')) {
+        return await this.validateWithChatCompletion();
       }
 
       return {
@@ -233,6 +248,89 @@ export class OpenCodeCloudClient {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * 使用 Chat Completion 驗證 API Key（替代方法）
+   * @returns 驗證結果
+   */
+  private async validateWithChatCompletion(): Promise<ValidationResult> {
+    try {
+      // 選擇一個便宜的模型進行測試
+      const testModel = this.getTestModel();
+      
+      const response = await this.createChatCompletion({
+        model: testModel,
+        messages: [
+          { role: 'user', content: 'Hi' },
+        ],
+        max_tokens: 10,
+      });
+
+      if (response && response.choices && response.choices.length > 0) {
+        return {
+          valid: true,
+          models: [testModel],
+        };
+      }
+
+      return {
+        valid: false,
+        error: 'Chat completion validation failed',
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        valid: false,
+        error: `驗證失敗: ${errorMessage}`,
+      };
+    }
+  }
+
+  /**
+   * 獲取測試用的模型名稱
+   * @returns 模型名稱
+   */
+  private getTestModel(): string {
+    switch (this.provider.id) {
+      case 'opencode-zen':
+        return `${this.provider.modelPrefix}gpt-5.2-codex`;
+      case 'opencode-go':
+        return `${this.provider.modelPrefix}minimax-m2.5-free`;
+      case 'anthropic':
+        return 'claude-sonnet-4-20250514';
+      case 'openai':
+        return 'gpt-4o';
+      default:
+        return 'gpt-4o';
+    }
+  }
+
+  /**
+   * 獲取 Fallback 模型列表（當 /models 端點返回 404 時使用）
+   */
+  private getFallbackModels(): string[] {
+    if (this.provider.id === 'opencode-go') {
+      return [
+        'opencode-go/minimax-m2.5-free',
+        'opencode-go/big-pickle',
+        'opencode-go/gpt-5-nano',
+        'opencode-go/mimo-v2-flash-free',
+        'opencode-go/nemotron-3-super-free',
+        'opencode-go/trinity-large-preview-free',
+        'opencode-go/kimi-k2.5',
+        'opencode-go/glm-5'
+      ];
+    }
+    if (this.provider.id === 'opencode-zen') {
+      return [
+        'opencode/gpt-5.2-codex',
+        'opencode/claude-opus-4.6',
+        'opencode/gpt-4o',
+        'opencode/big-pickle'
+      ];
+    }
+    return [];
   }
 
   /**
@@ -261,8 +359,16 @@ export class OpenCodeCloudClient {
 
       if (!response.ok) {
         const errorText = await response.text();
-        logger.warn(`[OpenCodeCloudClient] Failed to get models: ${response.status} ${errorText}`);
-        return [];
+        const errorMsg = `Failed to get models: ${response.status} ${errorText}`;
+        
+        // 404 錯誤返回 fallback 模型
+        if (response.status === 404) {
+          logger.warn(`[OpenCodeCloudClient] Models endpoint not found (404), using fallback models`);
+          return this.getFallbackModels();
+        }
+        
+        logger.warn(`[OpenCodeCloudClient] ${errorMsg}`);
+        throw new Error(errorMsg);
       }
 
       const data = await response.json() as ModelListResponse;
@@ -273,11 +379,20 @@ export class OpenCodeCloudClient {
 
       return [];
     } catch (error) {
+      // 如果已經是 Error 類型，直接重新拋出
+      if (error instanceof Error) {
+        logger.error('[OpenCodeCloudClient] Error fetching models', {
+          error: error.message,
+          provider: this.provider.id,
+        });
+        throw error;
+      }
+      
       logger.error('[OpenCodeCloudClient] Error fetching models', {
-        error: error instanceof Error ? error.message : String(error),
+        error: String(error),
         provider: this.provider.id,
       });
-      return [];
+      throw new Error(String(error));
     }
   }
 

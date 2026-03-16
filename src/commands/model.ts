@@ -65,58 +65,78 @@ const modelCommand = new SlashCommandBuilder()
  * Step 1: 顯示提供商選擇菜單
  */
 async function handleList(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId ?? undefined;
+  
   // 嘗試從 CLI 獲取動態模型列表，如果失敗則使用靜態列表
-  const models = await getAvailableModels();
-  const providers = await getProviders();
-  
-  // 統計資訊
-  const totalModels = models.length;
-  const totalProviders = providers.length;
-  
-  // 按提供商分組
-  const grouped = new Map<string, typeof models>();
-  for (const model of models) {
-    const existing = grouped.get(model.provider) || [];
-    existing.push(model);
-    grouped.set(model.provider, existing);
-  }
-  
-  // 建立 Embed
-  const embed = new EmbedBuilder()
-    .setColor(Colors.INFO)
-    .setTitle('🤖 AI 模型提供商')
-    .setDescription('請選擇一個提供商查看其模型：')
-    .addFields({
-      name: '📊 統計',
-      value: `${totalProviders} 個提供商 | ${totalModels} 個模型`,
-      inline: false,
+  try {
+    const models = await getAvailableModels(guildId);
+    const providers = await getProviders(guildId);
+    
+    // 統計資訊
+    const totalModels = models.length;
+    const totalProviders = providers.length;
+    
+    // 按提供商分組
+    const grouped = new Map<string, typeof models>();
+    for (const model of models) {
+      const existing = grouped.get(model.provider) || [];
+      existing.push(model);
+      grouped.set(model.provider, existing);
+    }
+    
+    // 建立 Embed
+    const embed = new EmbedBuilder()
+      .setColor(Colors.INFO)
+      .setTitle('🤖 AI 模型提供商')
+      .setDescription('請選擇一個提供商查看其模型：')
+      .addFields({
+        name: '📊 統計',
+        value: `${totalProviders} 個提供商 | ${totalModels} 個模型`,
+        inline: false,
+      });
+    
+    // 建立提供商選擇選單
+    const providerOptions: StringSelectMenuOptionBuilder[] = [];
+    
+    for (const provider of providers) {
+      const providerModels = grouped.get(provider) || [];
+      const emoji = getProviderEmoji(provider as ModelProvider);
+      providerOptions.push(
+        new StringSelectMenuOptionBuilder()
+          .setLabel(`${emoji} ${getProviderDisplayName(provider as ModelProvider)} (${providerModels.length} models)`)
+          .setValue(provider)
+      );
+    }
+    
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId('model:provider:select')
+      .setPlaceholder('選擇提供商...')
+      .addOptions(providerOptions);
+    
+    const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+    
+    await interaction.reply({
+      embeds: [embed],
+      components: [actionRow],
+      flags: [MessageFlags.Ephemeral],
     });
-  
-  // 建立提供商選擇選單
-  const providerOptions: StringSelectMenuOptionBuilder[] = [];
-  
-  for (const provider of providers) {
-    const providerModels = grouped.get(provider) || [];
-    const emoji = getProviderEmoji(provider as ModelProvider);
-    providerOptions.push(
-      new StringSelectMenuOptionBuilder()
-        .setLabel(`${emoji} ${getProviderDisplayName(provider as ModelProvider)} (${providerModels.length} models)`)
-        .setValue(provider)
-    );
+  } catch (error) {
+    console.error('Error fetching models:', error);
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(Colors.ERROR)
+          .setTitle('❌ 無法獲取模型列表')
+          .setDescription('目前沒有已連接的 AI 提供商。\n\n請先使用 `/connect` 指令連接您的 API 提供商，然後再使用此指令。')
+          .addFields({
+            name: '📝 說明',
+            value: '使用 `/connect` 指令可以連接您的 OpenAI、Anthropic、Google 等 API 提供商。',
+            inline: false,
+          }),
+      ],
+      flags: [MessageFlags.Ephemeral],
+    });
   }
-  
-  const selectMenu = new StringSelectMenuBuilder()
-    .setCustomId('model:provider:select')
-    .setPlaceholder('選擇提供商...')
-    .addOptions(providerOptions);
-  
-  const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-  
-  await interaction.reply({
-    embeds: [embed],
-    components: [actionRow],
-    flags: [MessageFlags.Ephemeral],
-  });
 }
 
 /**
@@ -164,9 +184,11 @@ async function handleSet(interaction: ChatInputCommandInteraction): Promise<void
  */
 async function handleInfo(interaction: ChatInputCommandInteraction): Promise<void> {
   const modelId = interaction.options.getString('model');
+  const guildId = interaction.guildId ?? undefined;
   
   // 獲取模型列表（從 CLI 或 fallback）
-  const models = await getAvailableModels();
+  try {
+    const models = await getAvailableModels(guildId);
   
   // 如果沒有指定模型，顯示選擇菜單
   if (!modelId) {
@@ -231,6 +253,23 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
     embeds: [embed],
     flags: [MessageFlags.Ephemeral],
   });
+  } catch (error) {
+    console.error('Error fetching models:', error);
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(Colors.ERROR)
+          .setTitle('❌ 無法獲取模型列表')
+          .setDescription('目前沒有已連接的 AI 提供商。\n\n請先使用 `/connect` 指令連接您的 API 提供商，然後再使用此指令。')
+          .addFields({
+            name: '📝 說明',
+            value: '使用 `/connect` 指令可以連接您的 OpenAI、Anthropic、Google 等 API 提供商。',
+            inline: false,
+          }),
+      ],
+      flags: [MessageFlags.Ephemeral],
+    });
+  }
 }
 
 // ============== 輔助函數 ==============
@@ -238,8 +277,8 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
 /**
  * 建立模型選擇下拉選單
  */
-async function createModelSelectMenu(): Promise<StringSelectMenuBuilder> {
-  const models = await getAvailableModels();
+async function createModelSelectMenu(guildId?: string): Promise<StringSelectMenuBuilder> {
+  const models = await getAvailableModels(guildId);
   
   // 按提供商分組 - 使用 string key 以支援動態 provider
   const grouped = new Map<string, typeof models>();
@@ -359,10 +398,11 @@ function buildModelInfoEmbed(model: ModelDefinition | undefined): EmbedBuilder {
 async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focusedOption = interaction.options.getFocused(true);
   const query = focusedOption.value.toLowerCase();
+  const guildId = interaction.guildId ?? undefined;
   
   try {
-    // 獲取可用模型列表
-    const models = await getAvailableModels();
+    // 獲取可用模型列表（動態從 providers）
+    const models = await getAvailableModels(guildId);
     
     // 根據輸入過濾模型
     const filtered = models.filter((model) => {
@@ -381,9 +421,11 @@ async function handleAutocomplete(interaction: AutocompleteInteraction): Promise
     
     await interaction.respond(choices);
   } catch (error) {
+    // 如果沒有 providers 連接，返回提示選項
     console.error('Autocomplete error:', error);
-    // 如果出錯，返回空選項
-    await interaction.respond([]);
+    await interaction.respond([
+      { name: '⚠️ 請先使用 /connect 連接 API 提供商', value: '' }
+    ]);
   }
 }
 

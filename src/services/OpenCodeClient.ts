@@ -148,9 +148,11 @@ export class OpenCodeClient {
     logger.info(`[OpenCodeClient] 啟動 OpenCode 伺服器於端口 ${port}...`);
 
     // 啟動伺服器進程
+    // Windows 需要 shell: true 來執行 .cmd 文件，macOS/Linux 不需要
+    const isWindows = process.platform === 'win32';
     const serverProcess = spawn('opencode', ['serve', '--port', String(port)], {
       cwd: projectPath,
-      shell: true,
+      shell: isWindows,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

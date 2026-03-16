@@ -4,6 +4,7 @@
  */
 
 import path from 'path';
+import os from 'os';
 import { Session, SessionStatus, SessionMetadata } from '../database/models/Session.js';
 import { v4 as uuidv4 } from 'uuid';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
@@ -83,6 +84,12 @@ export class SessionManager {
     this.providerService = ProviderService.getInstance();
     this.sqliteDb = SQLiteDatabase.getInstance();
     this.openCodeClient = getOpenCodeClient();
+
+    // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
+    // 這裡只檢查狀態，不負責初始化
+    if (!this.sqliteDb.isReady()) {
+      logger.warn('[SessionManager] SQLite 資料庫尚未初始化，某些功能可能無法正常工作');
+    }
   }
 
   /**
@@ -463,9 +470,9 @@ export class SessionManager {
    * 獲取預設專案路徑
    */
   private getDefaultProjectPath(channelId: string): string {
-    // 根據 Discord 頻道 ID 生成專案路徑
-    // 實際實現應該從數據庫或配置中獲取
-    return path.join(process.cwd(), 'projects', channelId);
+    // 使用可配置的專案根目錄，優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
+    const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
+    return path.join(projectsRoot, channelId);
   }
 
   /**
