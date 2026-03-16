@@ -14,6 +14,8 @@ import {
 } from 'discord.js';
 import { PermissionService, type ToolExecutionRequest, type ApprovalAction, type ToolApprovalRecord } from './PermissionService.js';
 import { getOpenCodeClient } from './OpenCodeClient.js';
+import { getOpenCodeSDKAdapter } from './OpenCodeSDKAdapter.js';
+import { FEATURE_FLAGS } from '../config/constants.js';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import { getSessionManager } from './SessionManager.js';
 import { log as logger } from '../utils/logger.js';
@@ -372,14 +374,23 @@ export class ToolApprovalService {
       return;
     }
 
-    // 發送 HTTP 請求
-    const openCodeClient = getOpenCodeClient();
-    await openCodeClient.sendToolApproval(
-      port,
-      opencodeSessionId,
-      request.requestId || request.sessionId,
-      approved
-    );
+    // 發送審批結果（根據 feature flag 選擇使用 SDK Adapter 或 Legacy Client）
+    if (FEATURE_FLAGS.USE_SDK_ADAPTER) {
+      const sdkAdapter = getOpenCodeSDKAdapter();
+      await sdkAdapter.sendToolApproval({
+        sessionId: opencodeSessionId,
+        requestId: request.requestId || request.sessionId,
+        approved,
+      });
+    } else {
+      const openCodeClient = getOpenCodeClient();
+      await openCodeClient.sendToolApproval(
+        port,
+        opencodeSessionId,
+        request.requestId || request.sessionId,
+        approved
+      );
+    }
 
     logger.info(`[ToolApprovalService] 已發送審批結果到 OpenCode: ${request.toolName} = ${approved}`);
   }

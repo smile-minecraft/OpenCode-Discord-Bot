@@ -127,6 +127,18 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
+    // 4.1 關閉 SDK Adapter
+    try {
+      const { getOpenCodeSDKAdapter } = await import('../services/OpenCodeSDKAdapter.js');
+      const sdkAdapter = getOpenCodeSDKAdapter();
+      await sdkAdapter.destroy();
+      logger.info('[Shutdown] SDK Adapter destroyed');
+    } catch (error) {
+      logger.error('[Shutdown] Error destroying SDK Adapter', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     // 5. 關閉 SSE 連線
     try {
       const { getSSEClient } = await import('../services/SSEClient.js');

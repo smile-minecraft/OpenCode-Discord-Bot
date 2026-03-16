@@ -1,6 +1,10 @@
 /**
  * Session 管理服務
  * @description 管理 OpenCode Session 生命週期，使用本地 OpenCode 伺服器
+ * 
+ * 支援兩種適配器:
+ * - 舊版 OpenCodeClient (預設)
+ * - 新版 OpenCodeSDKAdapter (當 FEATURE_FLAGS.USE_SDK_ADAPTER=true 時使用)
  */
 
 import path from 'path';
@@ -10,9 +14,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import logger from '../utils/logger.js';
 import { ProviderService } from './ProviderService.js';
-import { OpenCodeClient, getOpenCodeClient } from './OpenCodeClient.js';
 import { PROVIDERS, type OpenCodeProviderType } from './OpenCodeCloudClient.js';
-import { MODEL_CONFIG, OPENCODE_SERVER } from '../config/constants.js';
+import { MODEL_CONFIG, OPENCODE_SERVER, FEATURE_FLAGS } from '../config/constants.js';
+
+// 導入舊版和新版適配器
+import { OpenCodeClient as LegacyOpenCodeClient, getOpenCodeClient as getLegacyOpenCodeClient } from './deprecated/OpenCodeClient.js';
+import { getOpenCodeSDKAdapter, OpenCodeSDKAdapter } from './OpenCodeSDKAdapter.js';
 
 // ============== 類型定義 ==============
 
@@ -63,8 +70,14 @@ export class SessionManager {
   private providerService: ProviderService;
   /** SQLite 資料庫實例 */
   private sqliteDb: SQLiteDatabase;
-  /** OpenCode Client 實例 */
-  private openCodeClient: OpenCodeClient;
+  
+  // 根據 Feature Flag 選擇適配器
+  /** 舊版 OpenCode Client（當 USE_SDK_ADAPTER=false 時使用） */
+  private legacyClient!: LegacyOpenCodeClient;
+  /** 新版 SDK Adapter（當 USE_SDK_ADAPTER=true 時使用） */
+  private sdkAdapter!: OpenCodeSDKAdapter;
+  /** 當前是否使用 SDK Adapter */
+  private readonly useSDKAdapter: boolean;
   /** 預設模型 */
   private readonly defaultModel = MODEL_CONFIG.DEFAULT;
   /** 預設 Agent */
@@ -86,7 +99,17 @@ export class SessionManager {
   constructor() {
     this.providerService = ProviderService.getInstance();
     this.sqliteDb = SQLiteDatabase.getInstance();
-    this.openCodeClient = getOpenCodeClient();
+    
+    // 根據 Feature Flag 選擇適配器
+    this.useSDKAdapter = FEATURE_FLAGS.USE_SDK_ADAPTER;
+    
+    if (this.useSDKAdapter) {
+      this.sdkAdapter = getOpenCodeSDKAdapter();
+      logger.info('[SessionManager] 使用 SDK Adapter (USE_SDK_ADAPTER=true)');
+    } else {
+      this.legacyClient = getLegacyOpenCodeClient();
+      logger.info('[SessionManager] 使用舊版 Client (USE_SDK_ADAPTER=false)');
+    }
 
     // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
     // 這裡只檢查狀態，不負責初始化
@@ -145,7 +168,7 @@ export class SessionManager {
       if (!this.allocatedPorts.has(port)) {
         // 檢查端口是否已被佔用
         try {
-          const isRunning = await this.openCodeClient.isServerRunning(port);
+          const isRunning = await this.checkServerRunning(port);
           if (isRunning) {
             continue; // 端口已被佔用
           }
@@ -221,7 +244,7 @@ export class SessionManager {
       port = await this.allocatePort(options.channelId);
 
       // 2. 啟動 OpenCode 伺服器
-      await this.openCodeClient.startServer(session.projectPath, port);
+      await this.doStartServer(session.projectPath, port);
       logger.info(`[SessionManager] OpenCode 伺服器已啟動於端口 ${port}`);
 
       // 3. 檢查並獲取 Provider API Key（如有）
@@ -231,7 +254,7 @@ export class SessionManager {
       // 4. 如果有 Provider API Key，設定認證
       if (providerInfo) {
         try {
-          await this.openCodeClient.setProviderAuth(port, providerInfo.providerId, providerInfo.apiKey);
+          await this.doSetProviderAuth(port, providerInfo.providerId, providerInfo.apiKey);
           logger.info(`[SessionManager] 已設定 Provider 認證: ${providerInfo.providerId}`);
         } catch (error) {
           logger.warn(`[SessionManager] 設定 Provider 認證失敗:`, error);
@@ -240,7 +263,7 @@ export class SessionManager {
       }
 
       // 5. 創建 Session
-      const openCodeSessionInfo = await this.openCodeClient.createSession(port, {
+      const openCodeSessionInfo = await this.doCreateSession(port, {
         model: session.model,
         agent: session.agent,
         projectPath: session.projectPath,
@@ -264,7 +287,7 @@ export class SessionManager {
       // 清理：停止伺服器並釋放端口
       if (port) {
         try {
-          await this.openCodeClient.stopServer(port);
+          await this.doStopServer(port);
         } catch {
           // 忽略停止錯誤
         }
@@ -314,16 +337,16 @@ export class SessionManager {
 
     try {
       // 檢查伺服器是否仍在運行
-      if (!(await this.openCodeClient.isServerRunning(port))) {
+      if (!(await this.checkServerRunning(port))) {
         // 嘗試重新啟動伺服器
-        await this.openCodeClient.startServer(session.projectPath, port);
+        await this.doStartServer(session.projectPath, port);
         
         // 重新設定 Provider 認證（如有）
         const providerId = (session.metadata as SessionMetadata & { providerId?: string })?.providerId;
         if (providerId) {
           const apiKey = await this.providerService.getDecryptedApiKey(session.channelId, providerId);
           if (apiKey) {
-            await this.openCodeClient.setProviderAuth(port, providerId, apiKey);
+            await this.doSetProviderAuth(port, providerId, apiKey);
           }
         }
       }
@@ -362,7 +385,7 @@ export class SessionManager {
     
     if (port) {
       try {
-        await this.openCodeClient.stopServer(port);
+        await this.doStopServer(port);
         this.releasePort(port, session.channelId);
         logger.info(`[SessionManager] OpenCode 伺服器已停止於端口 ${port}`);
       } catch (error) {
@@ -559,6 +582,107 @@ export class SessionManager {
     return PROVIDERS[providerId] || null;
   }
 
+  // ============== SDK Adapter 橋接方法 ==============
+
+  /**
+   * 檢查伺服器是否運行
+   * @param port 端口號
+   * @returns 是否運行中
+   */
+  private async checkServerRunning(port: number): Promise<boolean> {
+    if (this.useSDKAdapter) {
+      return this.sdkAdapter.checkHealth(port);
+    } else {
+      return this.legacyClient.isServerRunning(port);
+    }
+  }
+
+  /**
+   * 啟動 OpenCode 伺服器（內部方法）
+   * @param projectPath 專案路徑
+   * @param port 端口號
+   */
+  private async doStartServer(projectPath: string, port: number): Promise<void> {
+    if (this.useSDKAdapter) {
+      await this.sdkAdapter.initialize({ projectPath, port });
+    } else {
+      await this.legacyClient.startServer(projectPath, port);
+    }
+  }
+
+  /**
+   * 停止 OpenCode 伺服器（內部方法）
+   * @param port 端口號
+   */
+  private async doStopServer(port: number): Promise<void> {
+    if (this.useSDKAdapter) {
+      // SDK adapter cleanup is handled differently - it cleans up its own process
+      await this.sdkAdapter.cleanup();
+    } else {
+      await this.legacyClient.stopServer(port);
+    }
+  }
+
+  /**
+   * 創建 Session（內部方法）
+   * @param port 端口號
+   * @param options Session 創建選項
+   * @returns Session 資訊
+   */
+  private async doCreateSession(
+    port: number,
+    options: {
+      model: string;
+      agent: string;
+      projectPath: string;
+      initialPrompt?: string;
+    }
+  ): Promise<{ id: string }> {
+    if (this.useSDKAdapter) {
+      const session = await this.sdkAdapter.createSession({
+        directory: options.projectPath,
+        title: options.initialPrompt ? options.initialPrompt.substring(0, 50) : undefined,
+      });
+      return { id: session.id };
+    } else {
+      return this.legacyClient.createSession(port, options);
+    }
+  }
+
+  /**
+   * 發送提示到 Session（內部方法）
+   * @param port 端口號
+   * @param sessionId Session ID
+   * @param prompt 提示內容
+   */
+  private async doSendPrompt(port: number, sessionId: string, prompt: string): Promise<void> {
+    if (this.useSDKAdapter) {
+      await this.sdkAdapter.sendPrompt({
+        sessionId,
+        prompt,
+      });
+    } else {
+      await this.legacyClient.sendPrompt(port, sessionId, prompt);
+    }
+  }
+
+  /**
+   * 設定 Provider 認證（內部方法）
+   * @param port 端口號
+   * @param providerId Provider ID
+   * @param apiKey API Key
+   */
+  private async doSetProviderAuth(port: number, providerId: string, apiKey: string): Promise<void> {
+    if (this.useSDKAdapter) {
+      await this.sdkAdapter.setProviderAuth({
+        providerId,
+        apiKey,
+      });
+    } else {
+      await this.legacyClient.setProviderAuth(port, providerId, apiKey);
+    }
+  }
+
   /**
    * 發送提示到 Session
    * @param sessionId Session ID
@@ -581,7 +705,7 @@ export class SessionManager {
     }
 
     try {
-      await this.openCodeClient.sendPrompt(port, opencodeSessionId, prompt);
+      await this.doSendPrompt(port, opencodeSessionId, prompt);
       session.updateActivity();
     } catch (error) {
       throw error;

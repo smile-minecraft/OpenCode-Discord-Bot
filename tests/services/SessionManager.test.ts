@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { SessionManager } from '../../src/services/SessionManager.js';
 
 // Mock OpenCodeClient
-vi.mock('../../src/services/OpenCodeClient.js', () => ({
+vi.mock('../../src/services/deprecated/OpenCodeClient.js', () => ({
   getOpenCodeClient: vi.fn(() => ({
     startServer: vi.fn().mockResolvedValue(undefined),
     createSession: vi.fn().mockResolvedValue({ id: 'test-session-id' }),
@@ -42,7 +42,7 @@ describe('SessionManager', () => {
       });
 
       // 重新設置 mock
-      const { getOpenCodeClient } = await import('../../src/services/OpenCodeClient.js');
+      const { getOpenCodeClient } = await import('../../src/services/deprecated/OpenCodeClient.js');
       (getOpenCodeClient as ReturnType<typeof vi.fn>).mockReturnValue({
         startServer: vi.fn().mockResolvedValue(undefined),
         createSession: vi.fn().mockResolvedValue({ id: 'test-session-id' }),
@@ -76,7 +76,7 @@ describe('SessionManager', () => {
     it('同一頻道的並發請求應該獲得相同埠號', async () => {
       const mockIsServerRunning = vi.fn().mockResolvedValue(false);
 
-      const { getOpenCodeClient } = await import('../../src/services/OpenCodeClient.js');
+      const { getOpenCodeClient } = await import('../../src/services/deprecated/OpenCodeClient.js');
       (getOpenCodeClient as ReturnType<typeof vi.fn>).mockReturnValue({
         startServer: vi.fn().mockResolvedValue(undefined),
         createSession: vi.fn().mockResolvedValue({ id: 'test-session-id' }),
@@ -107,7 +107,7 @@ describe('SessionManager', () => {
     it('連續調用應該正確處理', async () => {
       const mockIsServerRunning = vi.fn().mockResolvedValue(false);
 
-      const { getOpenCodeClient } = await import('../../src/services/OpenCodeClient.js');
+      const { getOpenCodeClient } = await import('../../src/services/deprecated/OpenCodeClient.js');
       (getOpenCodeClient as ReturnType<typeof vi.fn>).mockReturnValue({
         startServer: vi.fn().mockResolvedValue(undefined),
         createSession: vi.fn().mockResolvedValue({ id: 'test-session-id' }),
@@ -145,7 +145,7 @@ describe('SessionManager', () => {
         return Promise.resolve(false);
       });
 
-      const { getOpenCodeClient } = await import('../../src/services/OpenCodeClient.js');
+      const { getOpenCodeClient } = await import('../../src/services/deprecated/OpenCodeClient.js');
       (getOpenCodeClient as ReturnType<typeof vi.fn>).mockReturnValue({
         startServer: vi.fn().mockResolvedValue(undefined),
         createSession: vi.fn().mockResolvedValue({ id: 'test-session-id' }),
@@ -181,7 +181,7 @@ describe('SessionManager', () => {
       // 模擬所有埠號都已被佔用
       const mockIsServerRunning = vi.fn().mockResolvedValue(true);
 
-      const { getOpenCodeClient } = await import('../../src/services/OpenCodeClient.js');
+      const { getOpenCodeClient } = await import('../../src/services/deprecated/OpenCodeClient.js');
       (getOpenCodeClient as ReturnType<typeof vi.fn>).mockReturnValue({
         startServer: vi.fn().mockResolvedValue(undefined),
         createSession: vi.fn().mockResolvedValue({ id: 'test-session-id' }),
