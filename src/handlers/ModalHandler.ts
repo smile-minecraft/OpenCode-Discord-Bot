@@ -218,7 +218,7 @@ export class ModalHandler implements IModalHandler {
     if (options.showToUser && interaction.replied) {
       await interaction.followUp({
         content: options.customMessage || '發生錯誤',
-        ephemeral: true
+        flags: ['Ephemeral']
       });
     }
   }

@@ -3,7 +3,7 @@
  * @description 顯示機器人指令幫助
  */
 
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
 
 const command = new SlashCommandBuilder()
   .setName('help')
@@ -28,18 +28,18 @@ const command = new SlashCommandBuilder()
 
 async function execute(interaction: {
   options: { getString: (name: string) => string | null };
-  reply: (options: { embeds: EmbedBuilder[]; ephemeral: boolean }) => Promise<void>;
+  reply: (options: { embeds: EmbedBuilder[]; flags?: number[] }) => Promise<void>;
 }): Promise<void> {
   const selectedCommand = interaction.options.getString('command');
 
   if (selectedCommand) {
     // 顯示特定指令的幫助
     const embed = getCommandHelp(selectedCommand);
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
   } else {
     // 顯示所有指令的幫助
     const embed = getAllCommandsHelp();
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
   }
 }
 

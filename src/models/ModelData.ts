@@ -244,15 +244,19 @@ export function getModelsByProvider(): Map<ModelProvider, ModelDefinition[]> {
 
 // 獲取提供商顯示名稱
 export function getProviderDisplayName(provider: ModelProvider): string {
-  const names: Record<ModelProvider, string> = {
+  const names: Record<string, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
     google: 'Google',
     xai: 'xAI',
     cohere: 'Cohere',
     mistral: 'Mistral',
+    // 支援動態模型的 provider
+    opencode: 'OpenCode',
+    'opencode-go': 'OpenCode Go',
+    'github-copilot': 'GitHub Copilot',
   };
-  return names[provider];
+  return names[provider] || 'Other'; // 預設名稱
 }
 
 // 根據 ID 獲取模型
@@ -263,4 +267,11 @@ export function getModelById(id: string): ModelDefinition | undefined {
 // 根據類別獲取模型
 export function getModelsByCategory(category: ModelCategory): ModelDefinition[] {
   return MODELS.filter(m => m.category === category);
+}
+
+// 導出獲取動態模型的函數（延遲加載以避免循環依賴）
+export async function getAvailableModelsAsync(): Promise<ModelDefinition[]> {
+  // 動態導入避免循環依賴
+  const { getAvailableModels } = await import('../services/ModelService.js');
+  return getAvailableModels();
 }

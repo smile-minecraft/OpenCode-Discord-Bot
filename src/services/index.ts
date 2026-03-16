@@ -6,7 +6,14 @@ export type { QueueManager, QueueTask, QueueSettings, QueueState, TaskStatus } f
 export { getSessionQueueIntegration } from './SessionQueueIntegration.js';
 export type { SessionCompletedEvent, NewSessionRequest } from './SessionQueueIntegration.js';
 export { getSessionManager, initializeSessionManager } from './SessionManager.js';
-export type { SessionManager, CreateSessionOptions, SessionExecutionResult, OpenCodeExecutionOptions } from './SessionManager.js';
+export type { SessionManager, CreateSessionOptions, SessionExecutionResult } from './SessionManager.js';
+
+// SSE Client
+export { SSEClient, getSSEClient, initializeSSEClient } from './SSEClient.js';
+export type { SSEEvent, SSEEventType, SSEEventHandler, MessageEventData, ToolRequestEventData, ConnectedEventData, ErrorEventData, SessionCompleteEventData } from './SSEClient.js';
+
+// Streaming Message Manager
+export { StreamingMessageManager, getStreamingMessageManager, initializeStreamingMessageManager } from './StreamingMessageManager.js';
 
 // Passthrough Service
 export { PassthroughService, getPassthroughService, initializePassthroughService } from './PassthroughService.js';

@@ -167,6 +167,7 @@ export class PassthroughService {
         channelId,
         userId: message.author.id,
         prompt,
+        guildId: message.guildId || '',
       });
 
       log.info(`[Passthrough] Forwarded message to session: ${message.id}`);

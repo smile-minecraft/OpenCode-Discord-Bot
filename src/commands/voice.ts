@@ -12,6 +12,7 @@ import {
   SlashCommandSubcommandBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
+  MessageFlags,
 } from 'discord.js';
 import { getVoiceService } from '../services/VoiceService.js';
 
@@ -72,7 +73,7 @@ export async function handleVoiceCommand(
     default:
       await interaction.reply({
         content: '未知的子命令',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
   }
 }
@@ -83,7 +84,7 @@ export async function handleVoiceCommand(
 async function handleStatusCommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
   const voiceService = getVoiceService();
   const status = voiceService.getStatus();
@@ -122,7 +123,7 @@ async function handleStatusCommand(
 async function handleSetCommand(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
   const apiKey = interaction.options.getString('api_key', true);
   const voiceService = getVoiceService();

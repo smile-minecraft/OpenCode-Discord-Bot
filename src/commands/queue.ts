@@ -10,6 +10,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  MessageFlags,
   type ChatInputCommandInteraction,
 } from 'discord.js';
 
@@ -125,7 +126,7 @@ export async function handleQueueCommand(interaction: ChatInputCommandInteractio
     default:
       await interaction.reply({
         content: '未知的子指令',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
   }
 }
@@ -258,7 +259,7 @@ async function handleQueueClear(
   if (state.pendingCount === 0) {
     await interaction.reply({
       content: '✅ 隊列已經是空的',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -286,7 +287,7 @@ async function handleQueuePause(
   if (queueManager.isPaused) {
     await interaction.reply({
       content: '⚠️ 隊列已經是暫停狀態',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -314,7 +315,7 @@ async function handleQueueResume(
   if (!queueManager.isPaused) {
     await interaction.reply({
       content: '⚠️ 隊列沒有暫停',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }

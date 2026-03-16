@@ -24,6 +24,7 @@ import {
   type ApplicationCommand,
   type ChatInputCommandInteraction,
   type ButtonInteraction,
+  type AutocompleteInteraction,
   EmbedBuilder,
 } from 'discord.js';
 
@@ -43,10 +44,10 @@ import { createProjectManager } from '../services/ProjectManager.js';
 import { getQueueManager } from '../services/QueueManager.js';
 
 // Commands
-import { createSessionCommand, handleSessionCommand } from '../commands/session.js';
+import { createSessionCommand, handleSessionCommand, handleSessionModelAutocomplete } from '../commands/session.js';
 import { createProjectCommand, ProjectCommandHandler } from '../commands/project.js';
-import { model } from '../commands/model.js';
-import { agent } from '../commands/agent.js';
+import { model, handleAutocomplete as handleModelAutocomplete } from '../commands/model.js';
+import { agent, handleAutocomplete as handleAgentAutocomplete } from '../commands/agent.js';
 import { queueCommand, handleQueueCommand } from '../commands/queue.js';
 import { codeCommand, handleCodeCommand } from '../commands/code.js';
 import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js';
@@ -54,10 +55,13 @@ import { createVoiceCommand, handleVoiceCommand } from '../commands/voice.js';
 import { permissionCommand, executePermissionCommand } from '../commands/permission.js';
 import { command as helpCommand, execute as helpExecute } from '../commands/help.js';
 import { setupCommand, handleSetupCommand } from '../commands/index.js';
+import { connectCommand, handleConnectCommand } from '../commands/connect.js';
 
 // Models data
-import { MODELS } from '../models/ModelData.js';
+import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
+import { getModelsByProviderDynamic } from '../services/ModelService.js';
 import { AGENTS } from '../models/AgentData.js';
+import { Colors } from '../builders/EmbedBuilder.js';
 
 /**
  * Client 選項配置
@@ -188,7 +192,7 @@ export class DiscordClient extends Client {
         if (interaction.isRepliable()) {
           await interaction.reply({
             content: '此按鈕目前無法使用',
-            ephemeral: true,
+            flags: ['Ephemeral'],
           });
         }
       },
@@ -380,6 +384,7 @@ export class DiscordClient extends Client {
         permissionCommand,
         helpCommand,
         setupCommand,
+        connectCommand,
       ];
 
       if (guild) {
@@ -701,20 +706,23 @@ export class DiscordClient extends Client {
         
         let guideContent = '';
         switch (value) {
-          case 'add_project':
-            guideContent = '請使用 `/project add` 指令新增專案';
+          case 'action:token':
+            guideContent = '請使用 `/setup token` 指令設定 Discord Bot Token';
             break;
-          case 'configure_model':
-            guideContent = '請使用 `/model` 指令選擇模型';
+          case 'action:opencode':
+            guideContent = '請使用 `/setup opencode_path` 指令設定 OpenCode CLI 路徑';
             break;
-          case 'configure_agent':
-            guideContent = '請使用 `/agent` 指令選擇 Agent';
+          case 'action:model':
+            guideContent = '請使用 `/setup model` 指令選擇預設模型';
             break;
-          case 'setup_voice':
-            guideContent = '請使用 `/voice` 指令設定語音功能';
+          case 'action:gemini':
+            guideContent = '請使用 `/setup gemini_key` 指令設定 Gemini API Key（用於語音轉錄）';
+            break;
+          case 'action:status':
+            guideContent = '請使用 `/setup status` 指令查看目前設定狀態';
             break;
           default:
-            guideContent = '請稍後再試';
+            guideContent = '未知的操作，請稍後再試';
         }
         
         embed.setDescription(guideContent);
@@ -765,6 +773,61 @@ export class DiscordClient extends Client {
         await interaction.update({ embeds: [embed] });
       },
       description: '模型資訊選擇選單',
+    });
+
+    // === Model Provider Selection Handler (Two-Step UX) ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'model:provider:select',
+      callback: async (interaction) => {
+        const provider = interaction.values[0];
+        
+        // Step 2: 顯示該提供商的所有模型
+        const models = await getModelsByProviderDynamic(provider);
+        
+        if (models.length === 0) {
+          await interaction.update({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(Colors.ERROR)
+                .setTitle('❌ 沒有模型')
+                .setDescription(`提供商 "${provider}" 沒有可用的模型`)
+            ],
+            components: []
+          });
+          return;
+        }
+        
+        // 建立模型列表 Embed
+        const embed = new EmbedBuilder()
+          .setColor(Colors.INFO)
+          .setTitle(`🤖 ${getProviderDisplayName(provider as any)} 模型列表`)
+          .setDescription(`以下是 ${getProviderDisplayName(provider as any)} 提供的所有模型：`);
+        
+        // 顯示所有模型
+        const modelList = models
+          .map((m) => `• \`${m.id}\` - ${m.description || m.name}`)
+          .join('\n');
+        
+        // Discord field value limit is 1024, so we need to truncate if needed
+        const MAX_FIELD_VALUE = 1024;
+        const truncatedValue = modelList.length > MAX_FIELD_VALUE
+          ? modelList.substring(0, MAX_FIELD_VALUE - 20) + '\n... (更多模型)'
+          : modelList;
+        
+        embed.addFields({
+          name: `📋 模型列表 (${models.length})`,
+          value: truncatedValue,
+          inline: false,
+        });
+        
+        embed.setFooter({ text: '點擊模型 ID 可複製到剪貼簿' });
+        
+        await interaction.update({
+          embeds: [embed],
+          components: []
+        });
+      },
+      description: '提供商選擇選單 - 顯示該提供商的模型',
     });
 
     // === Agent SelectMenu Handlers ===
@@ -844,7 +907,7 @@ export class DiscordClient extends Client {
             { name: '別名', value: alias || '無', inline: true }
           );
         
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        await interaction.reply({ embeds: [embed], flags: ['Ephemeral'] });
       },
       description: '新增專案表單',
     });
@@ -900,6 +963,9 @@ export class DiscordClient extends Client {
         await this.selectMenuHandler.handle(interaction);
       } else if (interaction.isModalSubmit()) {
         await this.modalHandler.handle(interaction);
+      } else if (interaction.isAutocomplete()) {
+        // Autocomplete 處理
+        await this.handleAutocomplete(interaction);
       } else if (interaction.isContextMenuCommand()) {
         // Context Menu 處理
         await this.handleContextMenu(interaction);
@@ -919,7 +985,7 @@ export class DiscordClient extends Client {
         try {
           await interaction.reply({
             content: '處理互動時發生錯誤，請稍後再試',
-            ephemeral: true,
+            flags: ['Ephemeral'],
           });
         } catch {
           // 忽略錯誤
@@ -969,10 +1035,13 @@ export class DiscordClient extends Client {
         case 'setup':
           await handleSetupCommand(interaction as any);
           break;
+        case 'connect':
+          await handleConnectCommand(interaction as any);
+          break;
         default:
           await interaction.reply({
             content: `未知指令: ${commandName}`,
-            ephemeral: true,
+            flags: ['Ephemeral'],
           });
       }
     } catch (error) {
@@ -981,7 +1050,7 @@ export class DiscordClient extends Client {
       });
       await interaction.reply({
         content: '執行指令時發生錯誤',
-        ephemeral: true,
+        flags: ['Ephemeral'],
       });
     }
   }
@@ -992,6 +1061,44 @@ export class DiscordClient extends Client {
   private async handleContextMenu(_interaction: unknown): Promise<void> {
     // Context Menu 處理邏輯
     logger.debug('[ContextMenu] Handler not implemented');
+  }
+
+  /**
+   * 處理 Autocomplete 交互
+   */
+  private async handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+    const commandName = interaction.commandName;
+    const subcommandName = interaction.options.getSubcommand(false);
+    
+    try {
+      switch (commandName) {
+        case 'model':
+          await handleModelAutocomplete(interaction);
+          break;
+        case 'agent':
+          await handleAgentAutocomplete(interaction);
+          break;
+        case 'session':
+          // 處理 session start 的 model 選項自動完成
+          if (subcommandName === 'start') {
+            const focusedOption = interaction.options.getFocused(true);
+            if (focusedOption.name === 'model') {
+              await handleSessionModelAutocomplete(interaction);
+              return;
+            }
+          }
+          await interaction.respond([]);
+          break;
+        default:
+          // 忽略其他命令的 autocomplete
+          await interaction.respond([]);
+      }
+    } catch (error) {
+      logger.error(`[Autocomplete] Error handling ${commandName}`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await interaction.respond([]);
+    }
   }
 
   /**

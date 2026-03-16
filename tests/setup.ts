@@ -90,16 +90,32 @@ export const mockFs = {
 
 // ============== 全域鉤子 ==============
 
+// 保存原始的 console 方法
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+const originalConsoleLog = console.log;
+
 beforeEach(() => {
   // 重置所有 mock
   vi.clearAllMocks();
   
   // 重置計時器
   vi.useRealTimers();
+
+  // 抑制所有 console 輸出，使測試輸出更乾淨
+  // 這樣錯誤處理測試中的 expected 錯誤日誌不會顯示在終端
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'log').mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.resetAllMocks();
+  
+  // 恢復原始的 console 方法
+  console.error = originalConsoleError;
+  console.warn = originalConsoleWarn;
+  console.log = originalConsoleLog;
 });
 
 // ============== 輔助斷言 ==============

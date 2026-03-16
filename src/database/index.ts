@@ -13,6 +13,9 @@ export { Project, type ProjectData, type ProjectSettings, type ProjectStats } fr
 export { Database, createDatabase, type DatabaseOptions } from './Database.js';
 export { DatabaseError } from './Database.js';
 
+// SQLite Database
+export { SQLiteDatabase, createSQLiteDatabase, type SQLiteDatabaseOptions } from './SQLiteDatabase.js';
+
 // 重新匯出常見類型
 export type {
   PermissionData,

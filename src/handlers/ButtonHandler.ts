@@ -3,6 +3,8 @@
  * @description 負責註冊和分發按鈕交互事件
  */
 
+import { MessageFlags } from 'discord.js';
+
 import type {
   ButtonInteraction,
   ButtonHandlerConfig,
@@ -285,14 +287,14 @@ export class ButtonHandler {
       try {
         await error.interaction.reply({
           content: error.options.customMessage || '處理此按鈕時發生錯誤',
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         });
       } catch {
         // 如果無法回應，嘗試 followUp
         try {
           await error.interaction.followUp({
             content: error.options.customMessage || '處理此按鈕時發生錯誤',
-            ephemeral: true,
+            flags: [MessageFlags.Ephemeral],
           });
         } catch {
           // 忽略最終失敗

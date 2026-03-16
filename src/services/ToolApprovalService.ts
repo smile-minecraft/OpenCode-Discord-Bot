@@ -13,6 +13,8 @@ import {
   GuildTextBasedChannel,
 } from 'discord.js';
 import { PermissionService, type ToolExecutionRequest, type ApprovalAction, type ToolApprovalRecord } from './PermissionService.js';
+import { getOpenCodeClient } from './OpenCodeClient.js';
+import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import { log as logger } from '../utils/logger.js';
 
 /**
@@ -302,7 +304,7 @@ export class ToolApprovalService {
    * @param approvalId 審批 ID
    * @param action 審批操作
    */
-  private handleApprovalResponse(approvalId: string, action: ApprovalAction): void {
+  private async handleApprovalResponse(approvalId: string, action: ApprovalAction): Promise<void> {
     const pending = this.pendingApprovals.get(approvalId);
     
     if (pending) {
@@ -313,6 +315,14 @@ export class ToolApprovalService {
         this.updateApprovalMessage(pending.message, action, pending.request);
       }
 
+      // 發送 HTTP 請求通知 OpenCode（關鍵修復）
+      try {
+        const approved = action === 'allow' || action === 'always_allow';
+        await this.sendApprovalToOpenCode(pending.request, approved);
+      } catch (error) {
+        logger.error('[ToolApprovalService] 發送審批結果到 OpenCode 失敗:', { error });
+      }
+
       // 保存審批記錄（如果選擇記住）
       if (action === 'always_allow') {
         this.saveApprovalRecord(pending.request, action);
@@ -321,6 +331,48 @@ export class ToolApprovalService {
       pending.resolve(action);
       this.pendingApprovals.delete(approvalId);
     }
+  }
+
+  /**
+   * 發送審批結果到 OpenCode HTTP API
+   */
+  private async sendApprovalToOpenCode(
+    request: ToolExecutionRequest, 
+    approved: boolean
+  ): Promise<void> {
+    // 從資料庫獲取 session 資訊
+    const db = SQLiteDatabase.getInstance();
+    if (!db.isReady()) {
+      logger.warn('[ToolApprovalService] SQLite 資料庫未就緒，無法發送審批');
+      return;
+    }
+
+    // 這裡假設 request.sessionId 是 Discord session ID，需要映射到 OpenCode session ID
+    // 實際實現需要根據專案架構調整
+    const session = db.loadSession(request.sessionId);
+    if (!session) {
+      logger.warn(`[ToolApprovalService] 找不到 Session: ${request.sessionId}`);
+      return;
+    }
+
+    const port = session.metadata?.port;
+    const opencodeSessionId = session.metadata?.opencodeSessionId;
+
+    if (!port || !opencodeSessionId) {
+      logger.warn('[ToolApprovalService] Session 缺少 port 或 opencodeSessionId');
+      return;
+    }
+
+    // 發送 HTTP 請求
+    const openCodeClient = getOpenCodeClient();
+    await openCodeClient.sendToolApproval(
+      port,
+      opencodeSessionId,
+      request.requestId || request.sessionId,
+      approved
+    );
+
+    logger.info(`[ToolApprovalService] 已發送審批結果到 OpenCode: ${request.toolName} = ${approved}`);
   }
 
   /**

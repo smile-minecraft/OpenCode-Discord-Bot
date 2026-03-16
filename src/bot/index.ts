@@ -30,6 +30,14 @@ import {
 // ==================== 全域錯誤處理 ====================
 
 /**
+ * 緊急關閉函數（用於未捕獲的異常）
+ */
+function emergencyShutdown(signal: string): void {
+  logger.error(`[Fatal] Received ${signal}, starting emergency shutdown...`);
+  shutdown(1).catch(() => process.exit(1));
+}
+
+/**
  * 處理未捕獲的 Promise Rejection
  */
 process.on('unhandledRejection', (reason, promise) => {
@@ -42,6 +50,9 @@ process.on('unhandledRejection', (reason, promise) => {
   if (getEnvInfo().isProduction) {
     console.error('[UnhandledRejection]', reason);
   }
+
+  // 觸發 graceful shutdown
+  emergencyShutdown('unhandledRejection');
 });
 
 /**
@@ -53,8 +64,8 @@ process.on('uncaughtException', (error) => {
     stack: error.stack,
   });
 
-  // 優雅關閉
-  shutdown(1);
+  // 緊急關閉
+  emergencyShutdown('uncaughtException');
 });
 
 /**
@@ -88,21 +99,65 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 3. 關閉資料庫連線
+    // 3. 關閉 Discord 客戶端
     try {
-      const { Database } = await import('../database/index.js');
-      await Database.getInstance().close();
-      logger.info('[Shutdown] Database closed');
+      if (global.client?.isReady) {
+        await global.client.destroy();
+        logger.info('[Shutdown] Discord client destroyed');
+      }
     } catch (error) {
-      logger.error('[Shutdown] Error closing database', {
+      logger.error('[Shutdown] Error destroying Discord client', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
 
-    // 4. 登出 Discord
-    if (global.client?.isReady) {
-      await global.client.destroy();
-      logger.info('[Shutdown] Discord client destroyed');
+    // 4. 關閉 OpenCode HTTP 伺服器
+    try {
+      const { getOpenCodeClient } = await import('../services/OpenCodeClient.js');
+      const openCodeClient = getOpenCodeClient();
+      await openCodeClient.cleanupAll();
+      logger.info('[Shutdown] OpenCode servers stopped');
+    } catch (error) {
+      logger.error('[Shutdown] Error stopping OpenCode servers', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 5. 關閉 SSE 連線
+    try {
+      const { getSSEClient } = await import('../services/SSEClient.js');
+      const sseClient = getSSEClient();
+      sseClient.disconnect();
+      logger.info('[Shutdown] SSE connections closed');
+    } catch (error) {
+      logger.error('[Shutdown] Error closing SSE connections', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 6. 關閉 SQLite 資料庫
+    try {
+      const { SQLiteDatabase } = await import('../database/SQLiteDatabase.js');
+      const db = SQLiteDatabase.getInstance();
+      if (db.isReady()) {
+        db.close();
+        logger.info('[Shutdown] SQLite database closed');
+      }
+    } catch (error) {
+      logger.error('[Shutdown] Error closing SQLite database', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 7. 關閉舊的 JSON 資料庫（向後相容）
+    try {
+      const { Database } = await import('../database/index.js');
+      await Database.getInstance().close();
+      logger.info('[Shutdown] JSON database closed');
+    } catch (error) {
+      logger.error('[Shutdown] Error closing JSON database', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     logger.info('[Shutdown] Graceful shutdown completed');
@@ -140,19 +195,33 @@ process.on('SIGTERM', () => {
 async function initializeServices(_config: ReturnType<typeof loadConfig>): Promise<void> {
   logger.info('[Bootstrap] Initializing services...');
 
-  // 1. 初始化資料庫
+  // 1. 初始化 JSON 資料庫（向後相容）
   try {
     const { Database } = await import('../database/index.js');
     await Database.getInstance().initialize();
-    logger.info('[Bootstrap] Database initialized');
+    logger.info('[Bootstrap] JSON Database initialized');
   } catch (error) {
-    logger.error('[Bootstrap] Failed to initialize database', {
+    logger.error('[Bootstrap] Failed to initialize JSON database', {
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
 
-  // 2. 初始化 Permission Service
+  // 2. 初始化 SQLite 資料庫
+  try {
+    const { SQLiteDatabase } = await import('../database/SQLiteDatabase.js');
+    const sqliteDb = SQLiteDatabase.getInstance();
+    await sqliteDb.initialize();
+    logger.info('[Bootstrap] SQLite Database initialized');
+  } catch (error) {
+    logger.error('[Bootstrap] Failed to initialize SQLite database', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // 不阻塞啟動，SQLite 是可選的
+    logger.warn('[Bootstrap] Continuing without SQLite database');
+  }
+
+  // 3. 初始化 Permission Service
   try {
     await initializePermissionService();
     logger.info('[Bootstrap] Permission Service initialized');
@@ -178,9 +247,7 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
 
   // 4. 初始化 Session Manager
   try {
-    initializeSessionManager({
-      cliPath: process.env.OPENCODE_CLI_PATH || 'opencode',
-    });
+    initializeSessionManager();
     logger.info('[Bootstrap] Session Manager initialized');
   } catch (error) {
     logger.error('[Bootstrap] Failed to initialize Session Manager', {

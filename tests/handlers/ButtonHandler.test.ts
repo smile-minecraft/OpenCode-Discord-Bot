@@ -4,6 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { MessageFlags } from 'discord.js';
 import { ButtonHandler, createButtonHandler, ButtonHandlerError } from '../../src/handlers/ButtonHandler';
 import type { ButtonHandlerConfig, ButtonHandlerCallback } from '../../src/types/handlers';
 
@@ -244,7 +245,7 @@ describe('ButtonHandler', () => {
       expect(interaction.reply).toHaveBeenCalledWith(
         expect.objectContaining({
           content: expect.any(String),
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         })
       );
     });

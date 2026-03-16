@@ -10,16 +10,17 @@ import {
   ActionRowBuilder,
   EmbedBuilder,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
+  MessageFlags,
 } from 'discord.js';
 
 import {
-  MODELS,
-  DEFAULT_MODEL,
-  getModelsByProvider,
   getProviderDisplayName,
   getModelById,
+  type ModelDefinition,
   type ModelProvider,
 } from '../models/ModelData.js';
+import { getAvailableModels, getProviders } from '../services/ModelService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
 
 // ============== Slash Command 定義 ==============
@@ -41,12 +42,7 @@ const modelCommand = new SlashCommandBuilder()
           .setName('model')
           .setDescription('選擇模型')
           .setRequired(true)
-          .addChoices(
-            ...MODELS.map((m) => ({
-              name: `${getProviderDisplayName(m.provider)} - ${m.name}`,
-              value: m.id,
-            }))
-          )
+          .setAutocomplete(true)
       )
   )
   .addSubcommand((subcommand) =>
@@ -58,58 +54,68 @@ const modelCommand = new SlashCommandBuilder()
           .setName('model')
           .setDescription('選擇模型')
           .setRequired(false)
-          .addChoices(
-            ...MODELS.map((m) => ({
-              name: `${getProviderDisplayName(m.provider)} - ${m.name}`,
-              value: m.id,
-            }))
-          )
+          .setAutocomplete(true)
       )
   );
 
 // ============== 指令處理函數 ==============
 
 /**
- * 處理 /model list 指令
+ * 處理 /model list 指令 - 兩步驟 UX
+ * Step 1: 顯示提供商選擇菜單
  */
 async function handleList(interaction: ChatInputCommandInteraction): Promise<void> {
-  const modelsByProvider = getModelsByProvider();
+  // 嘗試從 CLI 獲取動態模型列表，如果失敗則使用靜態列表
+  const models = await getAvailableModels();
+  const providers = await getProviders();
+  
+  // 統計資訊
+  const totalModels = models.length;
+  const totalProviders = providers.length;
+  
+  // 按提供商分組
+  const grouped = new Map<string, typeof models>();
+  for (const model of models) {
+    const existing = grouped.get(model.provider) || [];
+    existing.push(model);
+    grouped.set(model.provider, existing);
+  }
+  
+  // 建立 Embed
   const embed = new EmbedBuilder()
     .setColor(Colors.INFO)
-    .setTitle('🤖 可用模型列表')
-    .setDescription('以下是你可以選擇的 AI 模型')
-
-  // 按提供商分組顯示
-  const providerOrder: ModelProvider[] = ['anthropic', 'openai', 'google', 'xai', 'cohere', 'mistral'];
+    .setTitle('🤖 AI 模型提供商')
+    .setDescription('請選擇一個提供商查看其模型：')
+    .addFields({
+      name: '📊 統計',
+      value: `${totalProviders} 個提供商 | ${totalModels} 個模型`,
+      inline: false,
+    });
   
-  for (const provider of providerOrder) {
-    const models = modelsByProvider.get(provider);
-    if (models && models.length > 0) {
-      const modelList = models
-        .map((m) => {
-          const emoji = m.id === DEFAULT_MODEL ? ' ⭐' : '';
-          return `\`${m.id}\` - ${m.name}${emoji}`;
-        })
-        .join('\n');
-      
-      embed.addFields({
-        name: `📦 ${getProviderDisplayName(provider)}`,
-        value: modelList,
-        inline: false,
-      });
-    }
+  // 建立提供商選擇選單
+  const providerOptions: StringSelectMenuOptionBuilder[] = [];
+  
+  for (const provider of providers) {
+    const providerModels = grouped.get(provider) || [];
+    const emoji = getProviderEmoji(provider as ModelProvider);
+    providerOptions.push(
+      new StringSelectMenuOptionBuilder()
+        .setLabel(`${emoji} ${getProviderDisplayName(provider as ModelProvider)} (${providerModels.length} models)`)
+        .setValue(provider)
+    );
   }
-
-  embed.setFooter({ text: '⭐ 為預設模型' });
-
-  // 建立模型選擇下拉選單
-  const selectMenu = createModelSelectMenu();
+  
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId('model:provider:select')
+    .setPlaceholder('選擇提供商...')
+    .addOptions(providerOptions);
+  
   const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-
+  
   await interaction.reply({
     embeds: [embed],
     components: [actionRow],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 }
 
@@ -128,7 +134,7 @@ async function handleSet(interaction: ChatInputCommandInteraction): Promise<void
           .setTitle('❌ 模型不存在')
           .setDescription(`無法找到模型: ${modelId}`),
       ],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -149,7 +155,7 @@ async function handleSet(interaction: ChatInputCommandInteraction): Promise<void
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 }
 
@@ -159,6 +165,9 @@ async function handleSet(interaction: ChatInputCommandInteraction): Promise<void
 async function handleInfo(interaction: ChatInputCommandInteraction): Promise<void> {
   const modelId = interaction.options.getString('model');
   
+  // 獲取模型列表（從 CLI 或 fallback）
+  const models = await getAvailableModels();
+  
   // 如果沒有指定模型，顯示選擇菜單
   if (!modelId) {
     const embed = new EmbedBuilder()
@@ -166,29 +175,44 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
       .setTitle('🤖 選擇模型')
       .setDescription('請選擇一個模型來查看詳細資訊');
 
+    // 限制選項數量最多 25 個（Discord.js StringSelectMenu 限制）
+    const MAX_OPTIONS = 25;
+    const limitedModels = models.slice(0, MAX_OPTIONS);
+    const hasMoreModels = models.length > MAX_OPTIONS;
+
+    let selectOptions = limitedModels.map((m) =>
+      new StringSelectMenuOptionBuilder()
+        .setLabel(`${getProviderDisplayName(m.provider)} - ${m.name}`)
+        .setValue(m.id)
+        .setDescription((m.description || '無描述').substring(0, 100))
+    );
+
+    // 如果超過限制，添加提示選項
+    if (hasMoreModels) {
+      selectOptions.push(
+        new StringSelectMenuOptionBuilder()
+          .setLabel('... 更多模型')
+          .setValue('__more__')
+          .setDescription(`共 ${models.length} 個模型`)
+      );
+    }
+
     const selectMenu = new StringSelectMenuBuilder()
       .setCustomId('model:info:select')
       .setPlaceholder('選擇模型...')
-      .addOptions(
-        MODELS.map((m) =>
-          new StringSelectMenuOptionBuilder()
-            .setLabel(`${getProviderDisplayName(m.provider)} - ${m.name}`)
-            .setValue(m.id)
-            .setDescription(m.description.substring(0, 100))
-        )
-      );
+      .addOptions(selectOptions);
 
     const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
     await interaction.reply({
       embeds: [embed],
       components: [actionRow],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
 
-  const model = getModelById(modelId);
+  const model = models.find(m => m.id === modelId);
   if (!model) {
     await interaction.reply({
       embeds: [
@@ -197,7 +221,7 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
           .setTitle('❌ 模型不存在')
           .setDescription(`無法找到模型: ${modelId}`),
       ],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -205,7 +229,7 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
   const embed = buildModelInfoEmbed(model);
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 }
 
@@ -214,53 +238,79 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
 /**
  * 建立模型選擇下拉選單
  */
-function createModelSelectMenu(): StringSelectMenuBuilder {
-  const modelsByProvider = getModelsByProvider();
-  const providerOrder: ModelProvider[] = ['anthropic', 'openai', 'google', 'xai', 'cohere', 'mistral'];
-
+async function createModelSelectMenu(): Promise<StringSelectMenuBuilder> {
+  const models = await getAvailableModels();
+  
+  // 按提供商分組 - 使用 string key 以支援動態 provider
+  const grouped = new Map<string, typeof models>();
+  for (const model of models) {
+    const existing = grouped.get(model.provider) || [];
+    existing.push(model);
+    grouped.set(model.provider, existing);
+  }
+  
+  const providerOrder = ['anthropic', 'openai', 'google', 'xai', 'cohere', 'mistral', 'opencode', 'opencode-go', 'github-copilot'];
   const options: StringSelectMenuOptionBuilder[] = [];
 
   for (const provider of providerOrder) {
-    const models = modelsByProvider.get(provider);
-    if (models && models.length > 0) {
-      // 添加提供商作為 Label（通過第一個選項）
-      for (const model of models) {
+    const providerModels = grouped.get(provider);
+    if (providerModels && providerModels.length > 0) {
+        // 添加提供商作為 Label（通過第一個選項）
+        for (const model of providerModels) {
         options.push(
           new StringSelectMenuOptionBuilder()
             .setLabel(`${model.name}`)
             .setValue(model.id)
-            .setDescription(model.description.substring(0, 100))
-            .setEmoji(getProviderEmoji(provider))
+            .setDescription((model.description || '無描述').substring(0, 100))
+            .setEmoji(getProviderEmoji(provider as ModelProvider))
         );
       }
     }
   }
 
+  // 限制選項數量最多 25 個（Discord.js StringSelectMenu 限制）
+  const MAX_OPTIONS = 25;
+  const limitedOptions = options.slice(0, MAX_OPTIONS);
+
+  // 如果超過限制，添加提示選項
+  if (models.length > MAX_OPTIONS) {
+    limitedOptions.push(
+      new StringSelectMenuOptionBuilder()
+        .setLabel('... 更多模型，請使用 /model set <model_id>')
+        .setValue('__more__')
+        .setDescription(`共 ${models.length} 個模型，超過顯示限制`)
+    );
+  }
+
   return new StringSelectMenuBuilder()
     .setCustomId('model:select')
     .setPlaceholder('選擇一個 AI 模型...')
-    .addOptions(options);
+    .addOptions(limitedOptions);
 }
 
 /**
  * 獲取提供商的 Emoji
  */
 function getProviderEmoji(provider: ModelProvider): string {
-  const emojis: Record<ModelProvider, string> = {
+  const emojis: Record<string, string> = {
     anthropic: '🧠',
     openai: '💬',
     google: '🔍',
     xai: '✨',
     cohere: '🔗',
     mistral: '🌊',
+    // 支援動態模型的 provider
+    opencode: '🤖',
+    'opencode-go': '⚡',
+    'github-copilot': '👨‍💻',
   };
-  return emojis[provider];
+  return emojis[provider] || '🤖'; // 預設 emoji
 }
 
 /**
  * 建立模型資訊 Embed
  */
-function buildModelInfoEmbed(model: ReturnType<typeof getModelById>): EmbedBuilder {
+function buildModelInfoEmbed(model: ModelDefinition | undefined): EmbedBuilder {
   if (!model) {
     return new EmbedBuilder()
       .setColor(Colors.ERROR)
@@ -302,6 +352,41 @@ function buildModelInfoEmbed(model: ReturnType<typeof getModelById>): EmbedBuild
 
 // ============== 導出 ==============
 
+/**
+ * 處理 Autocomplete 交互
+ * @param interaction - Autocomplete 交互實例
+ */
+async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const focusedOption = interaction.options.getFocused(true);
+  const query = focusedOption.value.toLowerCase();
+  
+  try {
+    // 獲取可用模型列表
+    const models = await getAvailableModels();
+    
+    // 根據輸入過濾模型
+    const filtered = models.filter((model) => {
+      const searchText = `${model.id} ${model.name} ${model.provider}`.toLowerCase();
+      return searchText.includes(query);
+    });
+    
+    // 限制最多 25 個選項（Discord 限制）
+    const limited = filtered.slice(0, 25);
+    
+    // 構建選項
+    const choices = limited.map((model) => ({
+      name: `${getProviderDisplayName(model.provider)} - ${model.name}`,
+      value: model.id,
+    }));
+    
+    await interaction.respond(choices);
+  } catch (error) {
+    console.error('Autocomplete error:', error);
+    // 如果出錯，返回空選項
+    await interaction.respond([]);
+  }
+}
+
 export const model = {
   data: modelCommand,
   execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
@@ -320,11 +405,11 @@ export const model = {
       default:
         await interaction.reply({
           content: '未知的子指令',
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         });
     }
   },
 };
 
 // 導出供外部使用的函數
-export { buildModelInfoEmbed, createModelSelectMenu };
+export { buildModelInfoEmbed, createModelSelectMenu, handleAutocomplete };

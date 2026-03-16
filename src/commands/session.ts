@@ -13,9 +13,13 @@ import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
+  MessageFlags,
 } from 'discord.js';
 import { SessionManager } from '../services/SessionManager.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
+import { getAvailableModels } from '../services/ModelService.js';
+import type { ModelDefinition } from '../models/ModelData.js';
 
 // ============== 指令構建 ==============
 
@@ -50,12 +54,7 @@ function createStartSubcommand(): SlashCommandSubcommandBuilder {
         .setName('model')
         .setDescription('使用的 AI 模型')
         .setRequired(false)
-        .addChoices(
-          { name: 'Claude Sonnet 4', value: 'anthropic/claude-sonnet-4-20250514' },
-          { name: 'Claude Opus 4', value: 'anthropic/claude-opus-4-20250514' },
-          { name: 'GPT-4o', value: 'openai/gpt-4o' },
-          { name: 'Gemini 2.5 Pro', value: 'google/gemini-2.5-pro-preview-05-20' }
-        )
+        .setAutocomplete(true)
     );
 }
 
@@ -110,6 +109,50 @@ function createAbortSubcommand(): SlashCommandSubcommandBuilder {
     );
 }
 
+// ============== Autocomplete 處理 ==============
+
+/**
+ * 處理 session start 命令的 model 選項自動完成
+ */
+export async function handleSessionModelAutocomplete(
+  interaction: AutocompleteInteraction
+): Promise<void> {
+  const guildId = interaction.guildId;
+  
+  if (!guildId) {
+    await interaction.respond([
+      { name: '請在伺服器中使用此指令', value: '' }
+    ]);
+    return;
+  }
+
+  const focusedValue = interaction.options.getFocused();
+  
+  try {
+    // 獲取可用的模型列表
+    const models = await getAvailableModels(guildId, true);
+    
+    // 過濾匹配的模型
+    const filteredModels = models.filter((model: ModelDefinition) => 
+      model.id.toLowerCase().includes(focusedValue.toLowerCase()) ||
+      model.name.toLowerCase().includes(focusedValue.toLowerCase())
+    );
+    
+    // 限制返回數量（Discord 限制為 25 個）
+    const limitedModels = filteredModels.slice(0, 25);
+    
+    const choices = limitedModels.map((model: ModelDefinition) => ({
+      name: `${model.name} (${model.provider})`,
+      value: model.id,
+    }));
+    
+    await interaction.respond(choices);
+  } catch (error) {
+    console.error('[Session Autocomplete] Error:', error);
+    await interaction.respond([]);
+  }
+}
+
 // ============== 指令處理 ==============
 
 /**
@@ -137,7 +180,7 @@ export async function handleSessionCommand(
     default:
       await interaction.reply({
         content: '未知的子命令',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
   }
 }
@@ -155,11 +198,21 @@ async function handleStartCommand(
   const model = interaction.options.getString('model') || 'anthropic/claude-sonnet-4-20250514';
   const channelId = interaction.channelId;
   const userId = interaction.user.id;
+  const guildId = interaction.guildId;
+
+  // 檢查是否有 Guild ID
+  if (!guildId) {
+    await interaction.editReply({
+      content: '❌ 此指令只能在伺服器中使用，無法在 DM 中使用。',
+    });
+    return;
+  }
 
   try {
-    // 創建新 Session
+    // 創建新 Session（傳入 guildId）
     const session = await sessionManager.createSession({
       channelId,
+      guildId,
       userId,
       prompt,
       model,
@@ -324,4 +377,5 @@ async function handleAbortCommand(
 export default {
   createSessionCommand,
   handleSessionCommand,
+  handleSessionModelAutocomplete,
 };

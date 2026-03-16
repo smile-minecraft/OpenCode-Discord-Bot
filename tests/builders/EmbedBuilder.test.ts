@@ -16,52 +16,47 @@ import {
 } from '../../src/builders/EmbedBuilder';
 import { EmbedBuilder } from 'discord.js';
 
-/**
- * 輔助函數：將 hex 顏色轉換為 Discord.js 內部使用的數值
- */
-function hexToNumber(hex: string): number {
-  return parseInt(hex.replace('#', ''), 16);
-}
-
 // ============== 測試 suite ==============
 
 describe('EmbedBuilder - 顏色常量', () => {
   describe('Colors', () => {
     it('應該有 SUCCESS 顏色', () => {
       expect(Colors.SUCCESS).toBeDefined();
-      expect(Colors.SUCCESS).toBe('#4ADE80');
+      expect(Colors.SUCCESS).toBe(0x4ADE80);
     });
 
     it('應該有 ERROR 顏色', () => {
       expect(Colors.ERROR).toBeDefined();
-      expect(Colors.ERROR).toBe('#F87171');
+      expect(Colors.ERROR).toBe(0xF87171);
     });
 
     it('應該有 WARNING 顏色', () => {
       expect(Colors.WARNING).toBeDefined();
-      expect(Colors.WARNING).toBe('#FBBF24');
+      expect(Colors.WARNING).toBe(0xFBBF24);
     });
 
     it('應該有 INFO 顏色', () => {
       expect(Colors.INFO).toBeDefined();
-      expect(Colors.INFO).toBe('#60A5FA');
+      expect(Colors.INFO).toBe(0x60A5FA);
     });
 
     it('應該有 PRIMARY 顏色', () => {
       expect(Colors.PRIMARY).toBeDefined();
-      expect(Colors.PRIMARY).toBe('#8B5CF6');
+      expect(Colors.PRIMARY).toBe(0x8B5CF6);
     });
 
     it('應該有 SECONDARY 顏色', () => {
       expect(Colors.SECONDARY).toBeDefined();
-      expect(Colors.SECONDARY).toBe('#6B7280');
+      expect(Colors.SECONDARY).toBe(0x6B7280);
     });
 
     it('所有顏色應該是有效的顏色值', () => {
       const colorValues = Object.values(Colors);
       colorValues.forEach(color => {
-        // 檢查是否是有效的 hex 顏色格式
-        expect(color).toMatch(/^#[0-9A-Fa-f]{6}$/);
+        // 檢查是否是有效的 hex 數值 (0x000000 to 0xFFFFFF)
+        expect(typeof color).toBe('number');
+        expect(color).toBeGreaterThanOrEqual(0x000000);
+        expect(color).toBeLessThanOrEqual(0xFFFFFF);
       });
     });
   });
@@ -474,7 +469,7 @@ describe('WarningEmbedBuilder', () => {
 
       expect(embed).toBeInstanceOf(EmbedBuilder);
       // Discord.js 將 hex 顏色轉換為數值
-      expect(embed.data.color).toBe(hexToNumber(Colors.WARNING));
+      expect(embed.data.color).toBe(Colors.WARNING);
       expect(embed.data.title).toBe('📉 剩餘次數不足');
     });
 
@@ -499,7 +494,7 @@ describe('InfoEmbedBuilder', () => {
 
       expect(embed).toBeInstanceOf(EmbedBuilder);
       // Discord.js 將 hex 顏色轉換為數值
-      expect(embed.data.color).toBe(hexToNumber(Colors.INFO));
+      expect(embed.data.color).toBe(Colors.INFO);
       expect(embed.data.title).toBe('ℹ️ 資訊');
     });
 
@@ -536,7 +531,7 @@ describe('InfoEmbedBuilder', () => {
 
       expect(embed).toBeInstanceOf(EmbedBuilder);
       // Discord.js 將 hex 顏色轉換為數值
-      expect(embed.data.color).toBe(hexToNumber(Colors.INFO));
+      expect(embed.data.color).toBe(Colors.INFO);
       expect(embed.data.title).toBe('📖 使用說明');
       expect(embed.data.fields).toHaveLength(2);
     });

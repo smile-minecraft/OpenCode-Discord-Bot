@@ -410,7 +410,7 @@ export class SelectMenuHandler {
       try {
         await interaction.reply({
           content: options.customMessage || '處理您的請求時發生錯誤，請稍後再試。',
-          ephemeral: true,
+          flags: ['Ephemeral'],
         });
       } catch {
         // 如果無法回复，嘗試編輯回覆

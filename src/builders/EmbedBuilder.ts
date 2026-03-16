@@ -9,12 +9,12 @@ import { EmbedBuilder, APIEmbedField, ColorResolvable, GuildMember, User } from 
 
 /** 成功顏色 - 綠色 */
 export const Colors = {
-  SUCCESS: '#4ADE80' as ColorResolvable,
-  ERROR: '#F87171' as ColorResolvable,
-  WARNING: '#FBBF24' as ColorResolvable,
-  INFO: '#60A5FA' as ColorResolvable,
-  PRIMARY: '#8B5CF6' as ColorResolvable,
-  SECONDARY: '#6B7280' as ColorResolvable,
+  SUCCESS: 0x4ADE80,
+  ERROR: 0xF87171,
+  WARNING: 0xFBBF24,
+  INFO: 0x60A5FA,
+  PRIMARY: 0x8B5CF6,
+  SECONDARY: 0x6B7280,
 } as const;
 
 // ============== 基礎 Embed 構建器 ==============

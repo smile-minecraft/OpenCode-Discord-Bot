@@ -61,6 +61,14 @@ export type SessionStatus =
  * Session 元資料
  */
 export interface SessionMetadata {
+  /** Cloud Session ID（用於 OpenCode Cloud API） */
+  cloudSessionId?: string;
+  /** Provider ID（用於 OpenCode Cloud API） */
+  providerId?: string;
+  /** HTTP 伺服器埠號（已棄用，改用 cloudSessionId） */
+  port?: number;
+  /** OpenCode 內部 Session ID */
+  opencodeSessionId?: string;
   /** 使用的模型資訊 */
   modelInfo?: {
     provider: string;

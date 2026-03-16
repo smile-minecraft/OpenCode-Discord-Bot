@@ -10,6 +10,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  MessageFlags,
 } from 'discord.js';
 import { getPassthroughService } from '../services/PassthroughService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
@@ -72,7 +73,7 @@ export async function handleCodeCommand(interaction: ChatInputCommandInteraction
     default:
       await interaction.reply({
         content: '❌ 未知的子指令',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
   }
 }

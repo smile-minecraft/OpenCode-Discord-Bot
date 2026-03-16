@@ -13,7 +13,8 @@ import {
 } from 'discord.js';
 
 import { Database } from '../database/index.js';
-import { MODELS, DEFAULT_MODEL, getModelById } from '../models/ModelData.js';
+import { MODELS, DEFAULT_MODEL } from '../models/ModelData.js';
+import { getAvailableModels } from '../services/ModelService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
 
 // ============== 指令定義 ==============
@@ -30,17 +31,6 @@ const command = new SlashCommandBuilder()
     subcommand
       .setName('status')
       .setDescription('查看目前設定狀態')
-  )
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('token')
-      .setDescription('設定 Discord Bot Token')
-      .addStringOption((option) =>
-        option
-          .setName('token')
-          .setDescription('Discord Bot Token')
-          .setRequired(true)
-      )
   )
   .addSubcommand((subcommand) =>
     subcommand
@@ -85,7 +75,6 @@ const command = new SlashCommandBuilder()
 // ============== 設定項目 ==============
 
 interface SetupConfig {
-  discordToken?: string;
   opencodePath?: string;
   defaultModel?: string;
   geminiApiKey?: string;
@@ -104,9 +93,6 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     case 'status':
       await handleStatus(interaction);
       break;
-    case 'token':
-      await handleToken(interaction);
-      break;
     case 'opencode_path':
       await handleOpencodePath(interaction);
       break;
@@ -119,7 +105,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     default:
       await interaction.reply({
         content: '未知的子指令',
-        ephemeral: true,
+        flags: ['Ephemeral'],
       });
   }
 }
@@ -130,7 +116,8 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
  * 處理 start 子命令 - 顯示設定精靈
  */
 async function handleStart(interaction: ChatInputCommandInteraction): Promise<void> {
-  const config = getCurrentConfig();
+  const guildId = interaction.guildId!;
+  const config = await getCurrentConfig(guildId);
   const missingItems = getMissingConfigItems(config);
 
   const embed = new EmbedBuilder()
@@ -147,10 +134,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
 
   // 顯示各項設定狀態
   const statusFields = [
-    {
-      name: '🤖 Discord Bot Token',
-      value: config.discordToken ? '✅ 已設定' : '❌ 未設定',
-    },
     {
       name: '📁 OpenCode CLI 路徑',
       value: config.opencodePath ? `✅ 已設定: ${config.opencodePath}` : '❌ 未設定',
@@ -185,11 +168,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
     .setPlaceholder('選擇操作...')
     .addOptions(
       new StringSelectMenuOptionBuilder()
-        .setLabel('設定 Bot Token')
-        .setValue('action:token')
-        .setEmoji('🤖')
-        .setDescription('設定 Discord Bot Token'),
-      new StringSelectMenuOptionBuilder()
         .setLabel('設定 OpenCode 路徑')
         .setValue('action:opencode')
         .setEmoji('📁')
@@ -216,7 +194,7 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
   await interaction.reply({
     embeds: [embed],
     components: [actionRow],
-    ephemeral: true,
+    flags: ['Ephemeral'],
   });
 }
 
@@ -224,18 +202,14 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
  * 處理 status 子命令 - 顯示設定狀態
  */
 async function handleStatus(interaction: ChatInputCommandInteraction): Promise<void> {
-  const config = getCurrentConfig();
+  const guildId = interaction.guildId!;
+  const config = await getCurrentConfig(guildId);
   const missingItems = getMissingConfigItems(config);
 
   const embed = new EmbedBuilder()
     .setTitle('📊 設定狀態')
     .setColor(missingItems.length === 0 ? Colors.SUCCESS : Colors.WARNING)
     .addFields(
-      {
-        name: '🤖 Discord Bot Token',
-        value: config.discordToken ? '✅ 已設定' : '❌ 未設定',
-        inline: true,
-      },
       {
         name: '📁 OpenCode CLI 路徑',
         value: config.opencodePath ? '✅ 已設定' : '❌ 未設定',
@@ -281,49 +255,7 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
-  });
-}
-
-/**
- * 處理 token 子命令
- */
-async function handleToken(interaction: ChatInputCommandInteraction): Promise<void> {
-  const token = interaction.options.getString('token', true);
-
-  // 驗證 token 格式
-  if (!token.startsWith('MT') || token.length < 50) {
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(Colors.ERROR)
-          .setTitle('❌ Token 格式無效')
-          .setDescription('請輸入正確的 Discord Bot Token'),
-      ],
-      ephemeral: true,
-    });
-    return;
-  }
-
-  // 保存 token
-  await saveConfig(interaction.guildId!, 'discordToken', token);
-
-  const embed = new EmbedBuilder()
-    .setColor(Colors.SUCCESS)
-    .setTitle('✅ Discord Bot Token 已設定')
-    .setDescription('Token 已成功保存！')
-    .addFields(
-      {
-        name: '⚠️ 安全性提醒',
-        value: '請勿將 Token 分享給他人。建議在 `.env` 檔案中設定 `DISCORD_TOKEN`。',
-        inline: false,
-      }
-    )
-    .setTimestamp();
-
-  await interaction.reply({
-    embeds: [embed],
-    ephemeral: true,
+    flags: ['Ephemeral'],
   });
 }
 
@@ -342,7 +274,7 @@ async function handleOpencodePath(interaction: ChatInputCommandInteraction): Pro
           .setTitle('❌ 路徑無效')
           .setDescription('請輸入有效的路徑'),
       ],
-      ephemeral: true,
+      flags: ['Ephemeral'],
     });
     return;
   }
@@ -365,7 +297,7 @@ async function handleOpencodePath(interaction: ChatInputCommandInteraction): Pro
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: ['Ephemeral'],
   });
 }
 
@@ -374,7 +306,10 @@ async function handleOpencodePath(interaction: ChatInputCommandInteraction): Pro
  */
 async function handleModel(interaction: ChatInputCommandInteraction): Promise<void> {
   const modelId = interaction.options.getString('model_id', true);
-  const model = getModelById(modelId);
+  
+  // 嘗試從 CLI 獲取動態模型列表，如果失敗則使用靜態列表
+  const models = await getAvailableModels();
+  const model = models.find(m => m.id === modelId);
 
   if (!model) {
     await interaction.reply({
@@ -384,7 +319,7 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
           .setTitle('❌ 模型不存在')
           .setDescription(`無法找到模型: ${modelId}`),
       ],
-      ephemeral: true,
+      flags: ['Ephemeral'],
     });
     return;
   }
@@ -406,7 +341,7 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: ['Ephemeral'],
   });
 }
 
@@ -425,7 +360,7 @@ async function handleGeminiKey(interaction: ChatInputCommandInteraction): Promis
           .setTitle('❌ API Key 格式無效')
           .setDescription('請輸入正確的 Gemini API Key'),
       ],
-      ephemeral: true,
+      flags: ['Ephemeral'],
     });
     return;
   }
@@ -453,23 +388,33 @@ async function handleGeminiKey(interaction: ChatInputCommandInteraction): Promis
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: ['Ephemeral'],
   });
 }
 
 // ============== 輔助函數 ==============
 
 /**
- * 取得目前配置
+ * 取得目前配置 - 從資料庫讀取
  */
-function getCurrentConfig(): SetupConfig {
-  return {
-    discordToken: process.env.DISCORD_TOKEN,
-    opencodePath: process.env.OPENCODE_PATH,
-    defaultModel: process.env.DEFAULT_MODEL || DEFAULT_MODEL,
-    geminiApiKey: process.env.GEMINI_API_KEY,
-    configured: !!(process.env.DISCORD_TOKEN && process.env.OPENCODE_PATH),
-  };
+async function getCurrentConfig(guildId: string): Promise<SetupConfig> {
+  try {
+    const db = Database.getInstance();
+    const guild = await db.getGuild(guildId);
+
+    return {
+      opencodePath: guild?.settings?.opencodePath || process.env.OPENCODE_PATH,
+      defaultModel: guild?.settings?.defaultModel || process.env.DEFAULT_MODEL || DEFAULT_MODEL,
+      geminiApiKey: guild?.settings?.geminiApiKey || process.env.GEMINI_API_KEY,
+      configured: !!(guild?.settings?.opencodePath),
+    };
+  } catch (error) {
+    console.error('Failed to get config:', error);
+    return {
+      defaultModel: DEFAULT_MODEL,
+      configured: false,
+    };
+  }
 }
 
 /**
@@ -478,9 +423,6 @@ function getCurrentConfig(): SetupConfig {
 function getMissingConfigItems(config: SetupConfig): string[] {
   const items: string[] = [];
 
-  if (!config.discordToken) {
-    items.push('`/setup token <token>` - 設定 Discord Bot Token');
-  }
   if (!config.opencodePath) {
     items.push('`/setup opencode_path <path>` - 設定 OpenCode CLI 路徑');
   }
@@ -498,12 +440,12 @@ function getMissingConfigItems(config: SetupConfig): string[] {
 /**
  * 保存設定到資料庫
  */
-async function saveConfig(guildId: string, key: keyof SetupConfig, value: string): Promise<void> {
+async function saveConfig(guildId: string, key: string, value: string): Promise<void> {
   try {
     const db = Database.getInstance();
     const guild = await db.getOrCreateGuild(guildId, 'Setup');
 
-    // 將設定保存到 guild settings 的額外欄位
+    // 初始化 settings 如果不存在
     if (!guild.settings) {
       guild.settings = {
         enabled: true,
@@ -516,12 +458,14 @@ async function saveConfig(guildId: string, key: keyof SetupConfig, value: string
       };
     }
 
-    // 保存設定到自訂欄位 - 使用類型斷言
-    const guildAny = guild as unknown as Record<string, unknown>;
-    guildAny.customSettings = {
-      ...(guildAny.customSettings as Record<string, unknown>),
-      [key]: value,
-    };
+    // 保存設定到 settings 的正確欄位
+    if (key === 'opencodePath') {
+      guild.settings.opencodePath = value;
+    } else if (key === 'geminiApiKey') {
+      guild.settings.geminiApiKey = value;
+    } else if (key === 'defaultModel') {
+      guild.settings.defaultModel = value;
+    }
 
     await db.saveGuild(guild);
   } catch (error) {

@@ -45,6 +45,12 @@ import {
   type IContextMenuHandler,
 } from './ContextMenuHandler.js';
 
+import {
+  ToolApprovalHandler,
+  createToolApprovalHandler,
+  registerToolApprovalHandlers,
+} from './ToolApprovalHandler.js';
+
 // Re-export all
 export {
   ButtonHandler,
@@ -85,6 +91,12 @@ export {
   type ContextMenuHandlerResult,
   type RegisteredContextMenuInfo,
   type IContextMenuHandler,
+};
+
+export {
+  ToolApprovalHandler,
+  createToolApprovalHandler,
+  registerToolApprovalHandlers,
 };
 
 /**

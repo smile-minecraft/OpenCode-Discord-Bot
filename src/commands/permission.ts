@@ -9,6 +9,7 @@ import {
   EmbedBuilder,
   ChatInputCommandInteraction,
   Colors,
+  MessageFlags,
 } from 'discord.js';
 import { PermissionService } from '../services/PermissionService.js';
 import { Database } from '../database/index.js';
@@ -96,7 +97,7 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -150,7 +151,7 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -158,7 +159,7 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
   if (!targetUser) {
     await interaction.reply({
       content: '❌ 無法找到指定的用戶',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -174,7 +175,7 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
   if (!checkResult.allowed) {
     await interaction.reply({
       content: '❌ 您沒有足夠的權限來授予權限',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -218,7 +219,7 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
   } else {
     await interaction.reply({
       content: '❌ 授予權限失敗',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -232,7 +233,7 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -242,7 +243,7 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   if (!targetUser) {
     await interaction.reply({
       content: '❌ 無法找到指定的用戶',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -258,7 +259,7 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   if (!checkResult.allowed) {
     await interaction.reply({
       content: '❌ 您沒有足夠的權限來撤銷權限',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -267,7 +268,7 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   if (targetUser.id === guild.ownerId) {
     await interaction.reply({
       content: '❌ 無法撤銷伺服器擁有者的權限',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -296,7 +297,7 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   } else {
     await interaction.reply({
       content: '❌ 撤銷權限失敗',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -310,7 +311,7 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -326,7 +327,7 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
   if (!checkResult.allowed) {
     await interaction.reply({
       content: '❌ 您沒有足夠的權限來查看權限列表',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -336,7 +337,7 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
   if (!guildData) {
     await interaction.reply({
       content: '無法獲取伺服器資料',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -411,7 +412,7 @@ async function handleMode(interaction: ChatInputCommandInteraction): Promise<voi
   if (!guild) {
     await interaction.reply({
       content: '此指令只能在伺服器中使用',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -427,7 +428,7 @@ async function handleMode(interaction: ChatInputCommandInteraction): Promise<voi
   if (!checkResult.allowed) {
     await interaction.reply({
       content: '❌ 您沒有足夠的權限來設定權限模式',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -453,7 +454,7 @@ async function handleMode(interaction: ChatInputCommandInteraction): Promise<voi
   } else {
     await interaction.reply({
       content: '❌ 設定權限模式失敗',
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -483,7 +484,7 @@ export async function executePermissionCommand(interaction: ChatInputCommandInte
     default:
       await interaction.reply({
         content: '未知的子指令',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
   }
 }

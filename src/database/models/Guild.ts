@@ -105,6 +105,18 @@ export interface GuildSettings {
   allowedModels: string[];
   /** 允許的 Agent 清單 */
   allowedAgents: string[];
+  /** OpenCode CLI 路徑 */
+  opencodePath?: string;
+  /** Gemini API Key (語音轉錄) */
+  geminiApiKey?: string;
+  /** AI 提供商連接設置 */
+  providers?: Record<string, {
+    apiKey?: string;  // 加密儲存
+    connected: boolean;
+    connectedAt?: string;
+    lastValidated?: string;
+    validationError?: string;
+  }>;
 }
 
 /**

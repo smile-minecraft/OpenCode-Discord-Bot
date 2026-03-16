@@ -129,6 +129,7 @@ export class SessionButtonHandler {
         channelId,
         userId,
         prompt: '',
+        guildId: interaction.guildId || '',
       });
 
       // 顯示成功訊息
@@ -419,6 +420,7 @@ export class SessionButtonHandler {
         channelId,
         userId,
         prompt: '',
+        guildId: interaction.guildId || '',
       });
 
       const embed = SessionStatusEmbedBuilder.createSessionStartedCard({

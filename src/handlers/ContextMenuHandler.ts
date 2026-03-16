@@ -3,10 +3,7 @@
  * @description 負責註冊和分發用戶/訊息右鍵選單交互事件
  */
 
-import type {
-  UserContextMenuCommandInteraction,
-  MessageContextMenuCommandInteraction,
-} from 'discord.js';
+import { MessageFlags, type UserContextMenuCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
 import type {
   UserContextMenuHandlerConfig,
   UserContextMenuHandlerCallback,
@@ -351,14 +348,14 @@ export class ContextMenuHandler {
       try {
         await error.interaction.reply({
           content: error.options.customMessage || '處理此選單時發生錯誤',
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         });
       } catch {
         // 如果無法回應，嘗試 followUp
         try {
           await error.interaction.followUp({
             content: error.options.customMessage || '處理此選單時發生錯誤',
-            ephemeral: true,
+            flags: [MessageFlags.Ephemeral],
           });
         } catch {
           // 忽略最終失敗

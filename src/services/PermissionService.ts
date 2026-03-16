@@ -39,6 +39,8 @@ export interface UserPermissionInfo {
  * 工具執行請求
  */
 export interface ToolExecutionRequest {
+  /** 請求唯一 ID */
+  requestId: string;
   sessionId: string;
   channelId: string;
   userId: string;

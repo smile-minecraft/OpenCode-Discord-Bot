@@ -13,6 +13,7 @@ import {
   TextInputStyle,
   ActionRowBuilder,
   ModalActionRowComponentBuilder,
+  MessageFlags,
 } from 'discord.js';
 import { ProjectManager } from '../services/ProjectManager.js';
 import { Colors } from '../builders/EmbedBuilder.js';
@@ -141,7 +142,7 @@ export class ProjectCommandHandler {
       default:
         await interaction.reply({
           content: '❌ 未知的子指令',
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         });
     }
   }
@@ -272,7 +273,7 @@ export class ProjectCommandHandler {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     } catch (error) {
       const errorMessage = (error as Error).message;
@@ -285,7 +286,7 @@ export class ProjectCommandHandler {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     }
   }
@@ -310,7 +311,7 @@ export class ProjectCommandHandler {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
       return;
     }
@@ -357,7 +358,7 @@ export class ProjectCommandHandler {
 
     await interaction.reply({
       embeds: [embed],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
   }
 
@@ -370,7 +371,7 @@ export class ProjectCommandHandler {
     if (!projectId) {
       await interaction.reply({
         content: '❌ 請選擇要綁定的專案',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
       return;
     }
@@ -380,7 +381,7 @@ export class ProjectCommandHandler {
     if (!project) {
       await interaction.reply({
         content: '❌ 找不到指定的專案',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
       return;
     }
@@ -403,7 +404,7 @@ export class ProjectCommandHandler {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     } catch (error) {
       const errorMessage = (error as Error).message;
@@ -416,7 +417,7 @@ export class ProjectCommandHandler {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     }
   }
@@ -430,7 +431,7 @@ export class ProjectCommandHandler {
     if (!projectId) {
       await interaction.reply({
         content: '❌ 請選擇要移除的專案',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
       return;
     }
@@ -440,7 +441,7 @@ export class ProjectCommandHandler {
     if (!project) {
       await interaction.reply({
         content: '❌ 找不到指定的專案',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
       return;
     }
@@ -462,7 +463,7 @@ export class ProjectCommandHandler {
 
         await interaction.reply({
           embeds: [embed],
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         });
       } else {
         throw new Error('無法刪除專案');
@@ -478,7 +479,7 @@ export class ProjectCommandHandler {
 
       await interaction.reply({
         embeds: [embed],
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
     }
   }

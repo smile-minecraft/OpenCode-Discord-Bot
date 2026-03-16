@@ -10,6 +10,8 @@ import {
   ActionRowBuilder,
   EmbedBuilder,
   ChatInputCommandInteraction,
+  AutocompleteInteraction,
+  MessageFlags,
 } from 'discord.js';
 
 import {
@@ -41,12 +43,7 @@ const agentCommand = new SlashCommandBuilder()
           .setName('agent')
           .setDescription('選擇 Agent')
           .setRequired(true)
-          .addChoices(
-            ...AGENTS.map((a) => ({
-              name: `${a.name} - ${a.type}`,
-              value: a.id,
-            }))
-          )
+          .setAutocomplete(true)
       )
   )
   .addSubcommand((subcommand) =>
@@ -58,12 +55,7 @@ const agentCommand = new SlashCommandBuilder()
           .setName('agent')
           .setDescription('選擇 Agent')
           .setRequired(false)
-          .addChoices(
-            ...AGENTS.map((a) => ({
-              name: `${a.name} - ${a.type}`,
-              value: a.id,
-            }))
-          )
+          .setAutocomplete(true)
       )
   );
 
@@ -108,7 +100,7 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
   await interaction.reply({
     embeds: [embed],
     components: [actionRow],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 }
 
@@ -127,7 +119,7 @@ async function handleSet(interaction: ChatInputCommandInteraction): Promise<void
           .setTitle('❌ Agent 不存在')
           .setDescription(`無法找到 Agent: ${agentId}`),
       ],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -157,7 +149,7 @@ async function handleSet(interaction: ChatInputCommandInteraction): Promise<void
 
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 }
 
@@ -191,7 +183,7 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
     await interaction.reply({
       embeds: [embed],
       components: [actionRow],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -205,7 +197,7 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
           .setTitle('❌ Agent 不存在')
           .setDescription(`無法找到 Agent: ${agentId}`),
       ],
-      ephemeral: true,
+      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -213,7 +205,7 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
   const embed = buildAgentInfoEmbed(agent);
   await interaction.reply({
     embeds: [embed],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 }
 
@@ -304,6 +296,38 @@ function buildAgentInfoEmbed(agent: AgentDefinition): EmbedBuilder {
 
 // ============== 導出 ==============
 
+/**
+ * 處理 Autocomplete 交互
+ * @param interaction - Autocomplete 交互實例
+ */
+async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const focusedOption = interaction.options.getFocused(true);
+  const query = focusedOption.value.toLowerCase();
+  
+  try {
+    // 根據輸入過濾 Agent
+    const filtered = AGENTS.filter((agent) => {
+      const searchText = `${agent.id} ${agent.name} ${agent.type}`.toLowerCase();
+      return searchText.includes(query);
+    });
+    
+    // 限制最多 25 個選項（Discord 限制）
+    const limited = filtered.slice(0, 25);
+    
+    // 構建選項
+    const choices = limited.map((agent) => ({
+      name: `${agent.name} - ${getAgentTypeDisplayName(agent.type)}`,
+      value: agent.id,
+    }));
+    
+    await interaction.respond(choices);
+  } catch (error) {
+    console.error('Autocomplete error:', error);
+    // 如果出錯，返回空選項
+    await interaction.respond([]);
+  }
+}
+
 export const agent = {
   data: agentCommand,
   execute: async (interaction: ChatInputCommandInteraction): Promise<void> => {
@@ -322,11 +346,11 @@ export const agent = {
       default:
         await interaction.reply({
           content: '未知的子指令',
-          ephemeral: true,
+          flags: [MessageFlags.Ephemeral],
         });
     }
   },
 };
 
 // 導出供外部使用的函數
-export { buildAgentInfoEmbed, createAgentSelectMenu };
+export { buildAgentInfoEmbed, createAgentSelectMenu, handleAutocomplete };

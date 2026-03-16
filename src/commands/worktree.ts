@@ -13,6 +13,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ComponentType,
+  MessageFlags,
 } from 'discord.js';
 import { GitWorktreeService, GitWorktreeError } from '../services/GitWorktreeService.js';
 import { DefaultButtons } from '../builders/ActionRowBuilder.js';
@@ -143,7 +144,7 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
     if (interaction.deferred) {
       await interaction.editReply({ embeds: [errorEmbed], components: [] });
     } else {
-      await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed], flags: [MessageFlags.Ephemeral] });
     }
   }
 }
@@ -199,7 +200,7 @@ async function handleCreate(interaction: ChatInputCommandInteraction): Promise<v
     if (interaction.deferred) {
       await interaction.editReply({ embeds: [errorEmbed], components: [] });
     } else {
-      await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed], flags: [MessageFlags.Ephemeral] });
     }
   }
 }
@@ -232,7 +233,7 @@ async function handleDelete(interaction: ChatInputCommandInteraction): Promise<v
   await interaction.reply({
     embeds: [confirmEmbed],
     components: [confirmRow],
-    ephemeral: true,
+    flags: [MessageFlags.Ephemeral],
   });
 
   // 等待用戶確認
@@ -322,7 +323,7 @@ async function handlePR(interaction: ChatInputCommandInteraction): Promise<void>
       })
       .setTimestamp();
 
-    await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
+    await interaction.reply({ embeds: [errorEmbed], flags: [MessageFlags.Ephemeral] });
     return;
   }
 
@@ -373,7 +374,7 @@ async function handlePR(interaction: ChatInputCommandInteraction): Promise<void>
     if (interaction.deferred) {
       await interaction.editReply({ embeds: [errorEmbed], components: [] });
     } else {
-      await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed], flags: [MessageFlags.Ephemeral] });
     }
   }
 }
@@ -402,7 +403,7 @@ export async function executeWorktreeCommand(interaction: ChatInputCommandIntera
     default:
       await interaction.reply({
         content: '未知的子指令',
-        ephemeral: true,
+        flags: [MessageFlags.Ephemeral],
       });
   }
 }
@@ -447,7 +448,7 @@ export async function handleWorktreeButton(interaction: any): Promise<void> {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [helpEmbed], ephemeral: true });
+    await interaction.reply({ embeds: [helpEmbed], flags: [MessageFlags.Ephemeral] });
     return;
   }
 
@@ -522,7 +523,7 @@ export async function handleWorktreeButton(interaction: any): Promise<void> {
       )
       .setTimestamp();
 
-    await interaction.reply({ embeds: [prHelpEmbed], ephemeral: true });
+    await interaction.reply({ embeds: [prHelpEmbed], flags: [MessageFlags.Ephemeral] });
     return;
   }
 }
