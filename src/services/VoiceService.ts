@@ -4,8 +4,7 @@
  */
 
 import path from 'path';
-import fs, { createWriteStream } from 'fs';
-import fsAsync from 'fs/promises';
+import { createWriteStream, promises as fsPromises } from 'fs';
 import https from 'https';
 import { log as logger } from '../utils/logger.js';
 
@@ -72,7 +71,7 @@ export class VoiceService {
    */
   private async ensureTempDir(): Promise<void> {
     try {
-      await fs.mkdir(this.tempDir, { recursive: true });
+      await fsPromises.mkdir(this.tempDir, { recursive: true });
     } catch (error) {
       logger.error('[VoiceService] 創建臨時目錄失敗:', error as Error | Record<string, unknown>);
     }
@@ -111,7 +110,7 @@ export class VoiceService {
       const file = createWriteStream(destPath);
       
       const cleanup = () => {
-        fsAsync.unlink(destPath).catch(() => {});
+        fsPromises.unlink(destPath).catch(() => {});
       };
       
       const timeout = setTimeout(() => {
@@ -203,7 +202,7 @@ export class VoiceService {
     }
 
     // 讀取音頻檔案
-    const audioData = await fs.readFile(audioPath);
+    const audioData = await fsPromises.readFile(audioPath);
     const base64Audio = audioData.toString('base64');
 
     // 根據檔案副檔名判斷 MIME 類型
@@ -285,7 +284,7 @@ export class VoiceService {
    */
   private async cleanupTempFile(filePath: string): Promise<void> {
     try {
-      await fs.unlink(filePath);
+      await fsPromises.unlink(filePath);
     } catch (error) {
       logger.warn(`[VoiceService] 清理臨時檔案失敗: ${filePath}`, error as Record<string, unknown>);
     }
@@ -322,7 +321,7 @@ export class VoiceService {
       logger.info(`[VoiceService] 語音下載完成: ${tempFilePath}`);
 
       // 檢查檔案是否存在
-      const stats = await fs.stat(tempFilePath);
+      const stats = await fsPromises.stat(tempFilePath);
       if (stats.size === 0) {
         throw new Error('下載的檔案為空');
       }

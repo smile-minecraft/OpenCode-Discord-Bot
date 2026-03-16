@@ -216,14 +216,14 @@ describe('ContextMenuHandler', () => {
       const interaction = createMockUserContextInteraction('unknown:menu');
       await handler.handle(interaction as any);
 
-      expect(interaction.reply).toHaveBeenCalledTimes(1);
+      expect(interaction.editReply).toHaveBeenCalledTimes(1);
     });
 
     it('當沒有匹配的 Message Context Menu 處理器時應該發送錯誤回覆', async () => {
       const interaction = createMockMessageContextInteraction('unknown:menu');
       await handler.handle(interaction as any);
 
-      expect(interaction.reply).toHaveBeenCalledTimes(1);
+      expect(interaction.editReply).toHaveBeenCalledTimes(1);
     });
 
     it('應該正確調用 defaultUserHandler 當沒有匹配時', async () => {
@@ -336,8 +336,8 @@ describe('ContextMenuHandler', () => {
       const interaction = createMockUserContextInteraction('error:menu');
       await handler.handle(interaction as any);
 
-      // 應該調用 reply 顯示錯誤給用戶
-      expect(interaction.reply).toHaveBeenCalled();
+      // 應該調用 editReply 顯示錯誤給用戶
+      expect(interaction.editReply).toHaveBeenCalled();
     });
 
     it('應該正確調用自定義錯誤處理器', async () => {
@@ -370,11 +370,8 @@ describe('ContextMenuHandler', () => {
       const interaction = createMockUserContextInteraction('error:select');
       await handler.handle(interaction as any);
 
-      expect(interaction.reply).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.any(String),
-          flags: expect.anything(),
-        })
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.any(String)
       );
     });
 
@@ -383,12 +380,12 @@ describe('ContextMenuHandler', () => {
         commandName: 'test',
         isUserContextMenuCommand: () => false,
         isMessageContextMenuCommand: () => false,
-        reply: vi.fn().mockResolvedValue(undefined),
+        editReply: vi.fn().mockResolvedValue(undefined),
       };
 
       await handler.handle(interaction as any);
 
-      expect(interaction.reply).toHaveBeenCalled();
+      expect(interaction.editReply).toHaveBeenCalled();
     });
   });
 

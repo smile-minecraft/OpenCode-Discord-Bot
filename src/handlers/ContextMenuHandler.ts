@@ -3,7 +3,7 @@
  * @description 負責註冊和分發用戶/訊息右鍵選單交互事件
  */
 
-import { MessageFlags, type UserContextMenuCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
+import { type UserContextMenuCommandInteraction, type MessageContextMenuCommandInteraction } from 'discord.js';
 import logger from '../utils/logger.js';
 import type {
   UserContextMenuHandlerConfig,
@@ -176,6 +176,16 @@ export class ContextMenuHandler {
       }
     } catch (error) {
       logger.error('[ContextMenuHandler] Error handling user context menu:', error);
+      // 調用自定義錯誤處理器
+      if (this.errorHandler) {
+        await this.errorHandler(
+          new ContextMenuHandlerError(
+            error instanceof Error ? error.message : 'Unknown error',
+            interaction,
+            { showToUser: true, logLevel: 'error' }
+          )
+        );
+      }
       await interaction.editReply('❌ 處理命令時發生錯誤');
     }
   }
@@ -206,6 +216,16 @@ export class ContextMenuHandler {
       }
     } catch (error) {
       logger.error('[ContextMenuHandler] Error handling message context menu:', error);
+      // 調用自定義錯誤處理器
+      if (this.errorHandler) {
+        await this.errorHandler(
+          new ContextMenuHandlerError(
+            error instanceof Error ? error.message : 'Unknown error',
+            interaction,
+            { showToUser: true, logLevel: 'error' }
+          )
+        );
+      }
       await interaction.editReply('❌ 處理命令時發生錯誤');
     }
   }
@@ -337,16 +357,14 @@ export class ContextMenuHandler {
     // 嘗試回應用戶
     if (error.options.showToUser) {
       try {
-        await error.interaction.reply({
+        await error.interaction.editReply({
           content: error.options.customMessage || '處理此選單時發生錯誤',
-          flags: [MessageFlags.Ephemeral],
         });
       } catch {
         // 如果無法回應，嘗試 followUp
         try {
           await error.interaction.followUp({
             content: error.options.customMessage || '處理此選單時發生錯誤',
-            flags: [MessageFlags.Ephemeral],
           });
         } catch {
           // 忽略最終失敗
