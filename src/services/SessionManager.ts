@@ -12,6 +12,7 @@ import logger from '../utils/logger.js';
 import { ProviderService } from './ProviderService.js';
 import { OpenCodeClient, getOpenCodeClient } from './OpenCodeClient.js';
 import { PROVIDERS, type OpenCodeProviderType } from './OpenCodeCloudClient.js';
+import { MODEL_CONFIG, OPENCODE_SERVER } from '../config/constants.js';
 
 // ============== 類型定義 ==============
 
@@ -65,13 +66,13 @@ export class SessionManager {
   /** OpenCode Client 實例 */
   private openCodeClient: OpenCodeClient;
   /** 預設模型 */
-  private readonly defaultModel = 'anthropic/claude-sonnet-4-20250514';
+  private readonly defaultModel = MODEL_CONFIG.DEFAULT;
   /** 預設 Agent */
   private readonly defaultAgent = 'general';
   /** 預設端口範圍開始 */
-  private readonly portRangeStart = 3000;
+  private readonly portRangeStart = OPENCODE_SERVER.PORT_RANGE_START;
   /** 預設端口範圍結束 */
-  private readonly portRangeEnd = 3100;
+  private readonly portRangeEnd = OPENCODE_SERVER.PORT_RANGE_END;
   /** 當前分配的端口 */
   private allocatedPorts: Set<number> = new Set();
   /** 頻道 ID 到端口的映射 */

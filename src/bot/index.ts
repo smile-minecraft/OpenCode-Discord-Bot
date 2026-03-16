@@ -14,6 +14,7 @@
 
 import { createDiscordClient } from './client.js';
 import { loadConfig, getEnvInfo, checkRequiredEnvVars } from '../config/config.js';
+import { TIMEOUTS } from '../config/constants.js';
 import logger from '../utils/logger.js';
 
 // 服務匯入
@@ -297,7 +298,7 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
       enabled: true,
       autoApprovedTools: process.env.AUTO_APPROVE_PATTERNS?.split(',') || [],
       requireApprovalTools: process.env.REQUIRE_APPROVAL_PATTERNS?.split(',') || [],
-      approvalTimeout: parseInt(process.env.TOOL_APPROVAL_TIMEOUT || '300000'),
+      approvalTimeout: parseInt(process.env.TOOL_APPROVAL_TIMEOUT || TIMEOUTS.TOOL_APPROVAL.toString()),
     });
     logger.info('[Bootstrap] Tool Approval Service initialized');
   } catch (error) {

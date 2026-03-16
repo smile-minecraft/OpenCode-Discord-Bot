@@ -144,9 +144,15 @@ export class SQLiteDatabase {
       // 開啟資料庫
       this.db = new Database(this.dbPath);
       
-      // 啟用 WAL 模式
+      // 啟用 WAL 模式（提升並發讀寫效能）
       if (this.options.walMode) {
         this.db.pragma('journal_mode = WAL');
+        // WAL 模式下建議使用 NORMAL 同步模式
+        this.db.pragma('synchronous = NORMAL');
+        // 設置 WAL  checkpoint 自動執行
+        this.db.pragma('wal_autocheckpoint = 1000');
+        // 設置 busy timeout（等待鎖釋放的時間）
+        this.db.pragma('busy_timeout = 5000');
       }
       
       // 啟用外鍵約束
@@ -154,8 +160,11 @@ export class SQLiteDatabase {
         this.db.pragma('foreign_keys = ON');
       }
 
-      // 設定同步模式
-      this.db.pragma('synchronous = NORMAL');
+      // 設定快取大小（64MB）
+      this.db.pragma('cache_size = -64000');
+      
+      // 啟用記憶體映射 I/O（提升大資料庫效能）
+      this.db.pragma('mmap_size = 268435456'); // 256MB
       
       // 執行 schema - 支援 dev 和 production 模式
       let schemaPath = path.join(__dirname, 'schema.sql');
@@ -205,6 +214,9 @@ export class SQLiteDatabase {
       
       // 執行 migrations
       await this.runMigrations();
+      
+      // 確保必要的索引存在
+      this.createIndexes();
       
       this.isInitialized = true;
       logger.info(`[SQLiteDatabase] 資料庫已初始化: ${this.dbPath}`);
@@ -344,6 +356,69 @@ export class SQLiteDatabase {
       `).run(1, Date.now());
       logger.info('[SQLiteDatabase] Migration v1 已執行');
     }
+  }
+
+  // ==================== 索引創建 ====================
+
+  /**
+   * 創建效能優化索引
+   * @description 為經常查詢的欄位創建索引，提升查詢效能
+   */
+  private createIndexes(): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    // sessions 表的索引
+    const sessionsIndexes = [
+      // channel_id 索引 - 用於查詢頻道的所有 sessions
+      `CREATE INDEX IF NOT EXISTS idx_sessions_channel_id ON sessions(channel_id)`,
+      // status 索引 - 用於查詢特定狀態的 sessions
+      `CREATE INDEX IF NOT EXISTS idx_sessions_status_query ON sessions(status)`,
+      // last_active_at 索引 - 用於查詢最近活躍的 sessions
+      `CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at DESC)`,
+      // channel_id + status 複合索引 - 用於查詢頻道的活躍 sessions
+      `CREATE INDEX IF NOT EXISTS idx_sessions_channel_active ON sessions(channel_id, status) WHERE status IN ('running', 'starting', 'waiting')`,
+    ];
+
+    // messages 表的索引
+    const messagesIndexes = [
+      // role 索引 - 用於查詢特定角色的訊息
+      `CREATE INDEX IF NOT EXISTS idx_messages_role ON messages(role)`,
+    ];
+
+    // tool_approvals 表的索引
+    const toolApprovalsIndexes = [
+      // expires_at 索引 - 用於查詢過期的審批
+      `CREATE INDEX IF NOT EXISTS idx_tool_approvals_expires ON tool_approvals(expires_at) WHERE status = 'pending'`,
+      // requested_at 索引 - 用於按時間排序查詢審批
+      `CREATE INDEX IF NOT EXISTS idx_tool_approvals_requested ON tool_approvals(requested_at DESC)`,
+    ];
+
+    // session_files 表的索引
+    const sessionFilesIndexes = [
+      // change_type 索引 - 用於查詢特定類型的檔案變更
+      `CREATE INDEX IF NOT EXISTS idx_session_files_type ON session_files(change_type)`,
+      // timestamp 索引 - 用於按時間排序查詢檔案變更
+      `CREATE INDEX IF NOT EXISTS idx_session_files_timestamp ON session_files(timestamp DESC)`,
+    ];
+
+    // 執行所有索引創建語句
+    const allIndexes = [
+      ...sessionsIndexes,
+      ...messagesIndexes,
+      ...toolApprovalsIndexes,
+      ...sessionFilesIndexes,
+    ];
+
+    for (const indexSql of allIndexes) {
+      try {
+        this.db.exec(indexSql);
+      } catch (error) {
+        // 忽略索引創建失敗（可能是權限問題或索引已存在）
+        logger.debug(`[SQLiteDatabase] 索引創建: ${indexSql.substring(0, 50)}...`);
+      }
+    }
+
+    logger.info('[SQLiteDatabase] 資料庫索引已創建/驗證');
   }
 
   // ==================== Session 操作 ====================
@@ -1019,15 +1094,14 @@ export class SQLiteDatabase {
   // ==================== 工具方法 ====================
 
   /**
-   * 執行原始 SQL（用於除錯）
-   */
-  exec(sql: string): void {
-    if (!this.db) throw new Error('資料庫未初始化');
-    this.db.exec(sql);
-  }
-
-  /**
    * 準備語句（用於自訂查詢）
+   * @example
+   * // 安全的參數化查詢
+   * const stmt = db.prepare('SELECT * FROM users WHERE id = ?');
+   * const user = stmt.get(userId);
+   * 
+   * // 插入數據
+   * db.prepare('INSERT INTO users (name, email) VALUES (?, ?)').run(name, email);
    */
   prepare(sql: string): Database.Statement {
     if (!this.db) throw new Error('資料庫未初始化');

@@ -3,6 +3,8 @@
  * @description 定義所有可用的 Agent 及其元數據
  */
 
+import { MODEL_CONFIG } from '../config/constants.js';
+
 // Agent 類型
 export type AgentType = 'general' | 'coder' | 'reviewer' | 'architect' | 'debugger';
 
@@ -47,7 +49,7 @@ export const AGENTS: AgentDefinition[] = [
     description: '專注於程式開發的 Agent，擅長代碼生成和重構',
     type: 'coder',
     capabilities: ['代碼生成', '代碼重構', '調試', '測試生成', '文件生成'],
-    defaultModel: 'anthropic/claude-sonnet-4-20250514',
+    defaultModel: MODEL_CONFIG.DEFAULT,
     features: {
       tools: true,
       codeExecution: true,
@@ -61,7 +63,7 @@ export const AGENTS: AgentDefinition[] = [
     description: '專門用於代碼審查的 Agent，提供詳細的回饋和建議',
     type: 'reviewer',
     capabilities: ['代碼審查', '安全檢查', '效能分析', '最佳實踐'],
-    defaultModel: 'anthropic/claude-opus-4-20250514',
+    defaultModel: MODEL_CONFIG.DEFAULT,
     features: {
       tools: true,
       fileOperations: true,
@@ -73,7 +75,7 @@ export const AGENTS: AgentDefinition[] = [
     description: '系統架構顧問，幫助設計和規劃專案結構',
     type: 'architect',
     capabilities: ['架構設計', '技術選型', '系統規劃', '最佳實踐'],
-    defaultModel: 'anthropic/claude-opus-4-20250514',
+    defaultModel: MODEL_CONFIG.DEFAULT,
     features: {
       tools: true,
       webSearch: true,
@@ -86,7 +88,7 @@ export const AGENTS: AgentDefinition[] = [
     description: '專門用於調試和錯誤排除的 Agent',
     type: 'debugger',
     capabilities: ['錯誤診斷', '問題定位', '修復建議', '調試技巧'],
-    defaultModel: 'anthropic/claude-sonnet-4-20250514',
+    defaultModel: MODEL_CONFIG.DEFAULT,
     features: {
       tools: true,
       codeExecution: true,

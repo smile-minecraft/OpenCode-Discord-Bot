@@ -3,6 +3,8 @@
  * @description 專案資料結構
  */
 
+import { randomUUID } from 'crypto';
+
 export interface ProjectData {
   /** 專案 ID */
   projectId: string;
@@ -335,7 +337,7 @@ export class Project implements ProjectData {
   static fromPath(projectPath: string): Project {
     const pathParts = projectPath.split('/');
     const name = pathParts[pathParts.length - 1] || 'Untitled';
-    const projectId = `project_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const projectId = `project_${Date.now()}_${randomUUID().substring(0, 8)}`;
     
     return new Project({
       projectId,

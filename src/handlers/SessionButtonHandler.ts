@@ -14,6 +14,7 @@
 import { ButtonInteraction, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } from 'discord.js';
 import { ButtonHandlerConfig } from '../types/handlers.js';
 import { SessionManager, getSessionManager } from '../services/SessionManager.js';
+import { Session } from '../database/models/Session.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import {
   SessionButtonIds,
@@ -237,7 +238,7 @@ export class SessionButtonHandler {
     }
 
     // 驗證用戶權限 - 必須是 Session 擁有者或管理員
-    if ((session as any).userId !== interaction.user.id) {
+    if (session.userId !== interaction.user.id) {
       // 檢查是否為管理員
       const member = await interaction.guild?.members.fetch(interaction.user.id);
       if (!member?.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -322,7 +323,8 @@ export class SessionButtonHandler {
     }
 
     try {
-      const session = await this.sessionManager.resumeSession(sessionId);
+      // 先獲取 Session 進行權限驗證
+      const session = this.sessionManager.getSession(sessionId);
 
       if (!session) {
         await interaction.editReply({
@@ -331,13 +333,29 @@ export class SessionButtonHandler {
         return;
       }
 
+      // 驗證用戶權限
+      const hasPermission = await this.checkSessionOwnership(session, interaction);
+      if (!hasPermission) {
+        return;
+      }
+
+      // 恢復 Session
+      const resumedSession = await this.sessionManager.resumeSession(sessionId);
+
+      if (!resumedSession) {
+        await interaction.editReply({
+          content: '無法恢復 Session',
+        });
+        return;
+      }
+
       const embed = SessionStatusEmbedBuilder.createSessionResumedCard({
-        sessionId: session.sessionId,
-        status: session.status,
-        prompt: session.prompt,
+        sessionId: resumedSession.sessionId,
+        status: resumedSession.status,
+        prompt: resumedSession.prompt,
       });
 
-      const components = createSessionActionRow(session.sessionId, session.status);
+      const components = createSessionActionRow(resumedSession.sessionId, resumedSession.status);
 
       await interaction.editReply({
         embeds: [embed],
@@ -373,6 +391,12 @@ export class SessionButtonHandler {
         await interaction.editReply({
           embeds: [SessionStatusEmbedBuilder.createInvalidSessionCard(sessionId)],
         });
+        return;
+      }
+
+      // 驗證用戶權限
+      const hasPermission = await this.checkSessionOwnership(session, interaction);
+      if (!hasPermission) {
         return;
       }
 
@@ -412,7 +436,23 @@ export class SessionButtonHandler {
     }
 
     try {
-      // 先終止舊 Session
+      // 先獲取 Session 進行權限驗證
+      const existingSession = this.sessionManager.getSession(sessionId);
+
+      if (!existingSession) {
+        await interaction.editReply({
+          embeds: [SessionStatusEmbedBuilder.createInvalidSessionCard(sessionId)],
+        });
+        return;
+      }
+
+      // 驗證用戶權限
+      const hasPermission = await this.checkSessionOwnership(existingSession, interaction);
+      if (!hasPermission) {
+        return;
+      }
+
+      // 終止舊 Session
       await this.sessionManager.abortSession(sessionId);
 
       // 創建新 Session
@@ -506,6 +546,12 @@ export class SessionButtonHandler {
         return;
       }
 
+      // 驗證用戶權限
+      const hasPermission = await this.checkSessionOwnership(session, interaction);
+      if (!hasPermission) {
+        return;
+      }
+
       const embed = SessionStatusEmbedBuilder.createSessionDetailCard(session);
       const components = createSessionActionRow(session.sessionId, session.status);
 
@@ -560,10 +606,50 @@ export class SessionButtonHandler {
    * 處理 Passthrough 切換按鈕（帶 Session ID）
    */
   async handlePassthroughToggleWithId(interaction: ButtonInteraction): Promise<void> {
+    // 提取 sessionId（格式：session:passthrough:toggle:{sessionId}）
+    const sessionId = this.extractSessionId(interaction.customId, 'passthrough:toggle');
+
+    if (sessionId) {
+      // 帶 Session ID，需要驗證權限
+      const session = this.sessionManager.getSession(sessionId);
+      if (session) {
+        const hasPermission = await this.checkSessionOwnership(session, interaction);
+        if (!hasPermission) {
+          return;
+        }
+      }
+    }
+
+    // 執行 toggle 邏輯
     await this.handlePassthroughToggle(interaction);
   }
 
   // ============== 私有輔助方法 ==============
+
+  /**
+   * 驗證用戶是否有權操作 Session（擁有者或管理員）
+   * @param session Session 實例
+   * @param interaction Discord 交互
+   * @returns 如果有權限返回 true，否則返回 false（並發送錯誤訊息）
+   */
+  private async checkSessionOwnership(
+    session: Session,
+    interaction: ButtonInteraction
+  ): Promise<boolean> {
+    // 檢查是否為 Session 擁有者
+    if (session.userId !== interaction.user.id) {
+      // 檢查是否為管理員
+      const member = await interaction.guild?.members.fetch(interaction.user.id);
+      if (!member?.permissions.has(PermissionFlagsBits.Administrator)) {
+        await interaction.reply({
+          content: '❌ 您無權操作此 Session，只有 Session 擁有者或管理員可以執行此操作',
+          ephemeral: true
+        });
+        return false;
+      }
+    }
+    return true;
+  }
 
   /**
    * 從 customId 提取 Session ID

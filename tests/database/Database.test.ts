@@ -35,7 +35,7 @@ describe('Database', () => {
   let testDir: string;
   let db: Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     testDir = createTempDir();
     db = new Database({
       dataPath: testDir,
@@ -43,6 +43,8 @@ describe('Database', () => {
       backupCount: 3,
       debug: false,
     });
+    // 初始化資料庫以創建必要的目錄
+    await db.initialize();
   });
 
   afterEach(() => {
@@ -413,7 +415,8 @@ describe('Database', () => {
   describe('Utils 工具方法', () => {
     it('clearCache() 應該清空記憶體緩存', async () => {
       await db.getOrCreateGuild('guild123', 'Test Guild');
-      expect(db.getStats().guildCount).toBe(1);
+      const stats = await db.getStats();
+      expect(stats.guildCount).toBe(1);
 
       db.clearCache();
       // 注意：clearCache 只清空記憶體，不刪除檔案
@@ -424,7 +427,7 @@ describe('Database', () => {
       await db.createSession({ sessionId: 's1', channelId: 'c1' });
       await db.createProject({ projectId: 'p1', name: 'P1', path: '/p1' });
 
-      const stats = db.getStats();
+      const stats = await db.getStats();
 
       expect(stats.guildCount).toBe(1);
       expect(stats.sessionCount).toBe(1);
@@ -466,13 +469,15 @@ describe('Backup/Restore Integration', () => {
   let testDir: string;
   let db: Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     testDir = createTempDir();
     db = new Database({
       dataPath: testDir,
       autoBackup: true,
       backupCount: 3,
     });
+    // 初始化資料庫以創建必要的目錄
+    await db.initialize();
   });
 
   afterEach(() => {

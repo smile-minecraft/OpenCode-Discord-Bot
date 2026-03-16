@@ -31,6 +31,17 @@ vi.mock('../../src/utils/logger.js', () => ({
   },
 }));
 
+// Mock constants - use small timeout values for faster tests
+vi.mock('../../src/config/constants.js', () => ({
+  TIMEOUTS: {
+    HEALTH_CHECK: 50, // 50ms for faster tests
+    HTTP: 5000,
+    VOICE_DOWNLOAD: 60000,
+    TASK: 300000,
+    RECONNECT: 5000,
+  },
+}));
+
 // Import after mocking
 import { OpenCodeClient, OpenCodeError, getOpenCodeClient } from '../../src/services/OpenCodeClient';
 import type { CreateSessionOptions, SessionInfo } from '../../src/services/OpenCodeClient';
@@ -233,6 +244,8 @@ describe('OpenCodeClient', () => {
       mockSpawnFn.mockReturnValue(mockProcess as unknown as ReturnType<typeof import('child_process').spawn>);
       mockFetchFn.mockRejectedValue(new Error('not running'));
 
+      // With mocked TIMEOUTS.HEALTH_CHECK = 50ms, the test should complete quickly
+      // HEALTH_CHECK_MAX_RETRIES (5) * 50ms = ~250ms
       await expect(client.startServer('/test/project', 3000)).rejects.toThrow(OpenCodeError);
       await expect(client.startServer('/test/project', 3000)).rejects.toMatchObject({
         code: 'TIMEOUT',

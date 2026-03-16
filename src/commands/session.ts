@@ -20,6 +20,7 @@ import { SessionManager } from '../services/SessionManager.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import type { ModelDefinition } from '../models/ModelData.js';
+import { MODEL_CONFIG } from '../config/constants.js';
 
 // ============== 指令構建 ==============
 
@@ -195,7 +196,7 @@ async function handleStartCommand(
   await interaction.deferReply();
 
   const prompt = interaction.options.getString('prompt') || '';
-  const model = interaction.options.getString('model') || 'anthropic/claude-sonnet-4-20250514';
+  const model = interaction.options.getString('model') || MODEL_CONFIG.DEFAULT;
   const channelId = interaction.channelId;
   const userId = interaction.user.id;
   const guildId = interaction.guildId;

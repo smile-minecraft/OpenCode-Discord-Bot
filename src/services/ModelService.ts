@@ -86,11 +86,37 @@ function convertToModelDefinition(modelId: string): ModelDefinition {
 
 /**
  * 從 Provider 獲取模型列表
+ * @param guildId - Guild ID
  * @param providerId - Provider ID
  * @param apiKey - API Key
  * @returns 模型 ID 數組
  */
-async function fetchModelsFromProvider(providerId: OpenCodeProviderType, apiKey: string): Promise<string[]> {
+async function fetchModelsFromProvider(guildId: string, providerId: OpenCodeProviderType, apiKey: string): Promise<string[]> {
+  // 檢查是否是 OpenCode 提供商，如果是則使用儲存的模型
+  const isOpenCodeProvider = providerId === 'opencode-zen' || providerId === 'opencode-go';
+  
+  if (isOpenCodeProvider) {
+    // 嘗試從 ProviderService 獲取儲存的模型
+    try {
+      const providerService = ProviderService.getInstance();
+      const storedModels = await providerService.getStoredModels(guildId, providerId);
+      
+      if (storedModels && storedModels.length > 0) {
+        logger.info(`[ModelService] Using stored models for OpenCode provider ${providerId}`, {
+          guildId,
+          count: storedModels.length,
+        });
+        return storedModels;
+      }
+    } catch (error) {
+      logger.warn(`[ModelService] Failed to get stored models for ${providerId}, falling back to API`, {
+        guildId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  
+  // 對於非 OpenCode 提供商或獲取失敗的情況，嘗試從 API 獲取
   try {
     const client = createOpenCodeCloudClient(apiKey, providerId);
     const models = await client.getModels();
@@ -151,7 +177,7 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
           // 解密 API Key
           const apiKey = await providerService.getDecryptedApiKey(guildId, providerId);
           if (apiKey) {
-            const modelIds = await fetchModelsFromProvider(providerId as OpenCodeProviderType, apiKey);
+            const modelIds = await fetchModelsFromProvider(guildId, providerId as OpenCodeProviderType, apiKey);
             const models = modelIds.map(convertToModelDefinition);
             allModels.push(...models);
           }
@@ -234,7 +260,7 @@ export async function getDynamicModelList(guildId?: string): Promise<string[]> {
       if (connection.connected && connection.apiKey) {
         const apiKey = await providerService.getDecryptedApiKey(guildId, providerId);
         if (apiKey) {
-          const modelIds = await fetchModelsFromProvider(providerId as OpenCodeProviderType, apiKey);
+          const modelIds = await fetchModelsFromProvider(guildId, providerId as OpenCodeProviderType, apiKey);
           allModels.push(...modelIds);
         }
       }

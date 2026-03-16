@@ -88,10 +88,10 @@ export const permissionCommand = new SlashCommandBuilder()
   );
 
 /**
- * 處理 /permission check 指令
+ * 處理 /permission mode 指令
  */
-async function handleCheck(interaction: ChatInputCommandInteraction): Promise<void> {
-  const targetUser = interaction.options.getUser('user') || interaction.user;
+async function handleMode(interaction: ChatInputCommandInteraction): Promise<void> {
+  const mode = interaction.options.getString('mode') as 'everyone' | 'user' | 'role';
   const guild = interaction.guild;
   
   if (!guild) {
@@ -102,42 +102,47 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  // 異步操作需要先 defer
+  await interaction.deferReply();
+
   // 檢查權限
   const permissionService = PermissionService.getInstance();
-  const userPermission = await permissionService.checkPermission(
-    targetUser.id,
+  const checkResult = await permissionService.checkPermission(
+    interaction.user.id,
     guild.id,
-    'user'
+    'admin'
   );
 
-  const embed = new EmbedBuilder()
-    .setTitle('🔍 權限檢查結果')
-    .setColor(userPermission.allowed ? Colors.Green : Colors.Red)
-    .setDescription(
-      `用戶 **${targetUser.username}** 的權限狀態`
-    )
-    .addFields(
-      {
-        name: '👤 用戶',
-        value: `${targetUser.username} (\`${targetUser.id}\`)`,
-        inline: true,
-      },
-      {
-        name: '📊 權限狀態',
-        value: userPermission.allowed ? '✅ 已授權' : '❌ 未授權',
-        inline: true,
-      },
-      {
-        name: '📈 權限等級',
-        value: userPermission.level ? getLevelEmoji(userPermission.level) + ' ' + getLevelName(userPermission.level) : '無',
-        inline: true,
-      }
-    )
-    .setTimestamp();
+  if (!checkResult.allowed) {
+    await interaction.editReply({
+      content: '❌ 您沒有足夠的權限來設定權限模式',
+    });
+    return;
+  }
 
-  await interaction.reply({
-    embeds: [embed],
-  });
+  const success = await permissionService.setPermissionMode(guild.id, mode, 'user');
+
+  if (success) {
+    const embed = new EmbedBuilder()
+      .setTitle('⚙️ 權限模式已更新')
+      .setColor(Colors.Green)
+      .setDescription(`權限模式已設定為 **${getModeName(mode)}**`)
+      .addFields(
+        {
+          name: '📝 說明',
+          value: getModeDescription(mode),
+        }
+      )
+      .setTimestamp();
+
+    await interaction.editReply({
+      embeds: [embed],
+    });
+  } else {
+    await interaction.editReply({
+      content: '❌ 設定權限模式失敗',
+    });
+  }
 }
 
 /**
@@ -164,6 +169,9 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
     return;
   }
 
+  // 異步操作需要先 defer
+  await interaction.deferReply();
+
   // 檢查權限
   const permissionService = PermissionService.getInstance();
   const checkResult = await permissionService.checkPermission(
@@ -173,9 +181,8 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
   );
 
   if (!checkResult.allowed) {
-    await interaction.reply({
+    await interaction.editReply({
       content: '❌ 您沒有足夠的權限來授予權限',
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -204,7 +211,7 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
       )
       .setTimestamp();
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [embed],
     });
 
@@ -217,9 +224,8 @@ async function handleGrant(interaction: ChatInputCommandInteraction): Promise<vo
       // 用戶可能關閉了 DM
     }
   } else {
-    await interaction.reply({
+    await interaction.editReply({
       content: '❌ 授予權限失敗',
-      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -248,6 +254,9 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
     return;
   }
 
+  // 異步操作需要先 defer
+  await interaction.deferReply();
+
   // 檢查權限
   const permissionService = PermissionService.getInstance();
   const checkResult = await permissionService.checkPermission(
@@ -257,18 +266,16 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   );
 
   if (!checkResult.allowed) {
-    await interaction.reply({
+    await interaction.editReply({
       content: '❌ 您沒有足夠的權限來撤銷權限',
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
 
   // 不能撤銷伺服器擁有者的權限
   if (targetUser.id === guild.ownerId) {
-    await interaction.reply({
+    await interaction.editReply({
       content: '❌ 無法撤銷伺服器擁有者的權限',
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -291,13 +298,12 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
       )
       .setTimestamp();
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [embed],
     });
   } else {
-    await interaction.reply({
+    await interaction.editReply({
       content: '❌ 撤銷權限失敗',
-      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -316,6 +322,9 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
     return;
   }
 
+  // 異步操作需要先 defer
+  await interaction.deferReply();
+
   // 檢查權限
   const permissionService = PermissionService.getInstance();
   const checkResult = await permissionService.checkPermission(
@@ -325,9 +334,8 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
   );
 
   if (!checkResult.allowed) {
-    await interaction.reply({
+    await interaction.editReply({
       content: '❌ 您沒有足夠的權限來查看權限列表',
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -335,9 +343,8 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
   const guildData = await Database.getInstance().getGuild(guild.id);
   
   if (!guildData) {
-    await interaction.reply({
+    await interaction.editReply({
       content: '無法獲取伺服器資料',
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
@@ -397,16 +404,16 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
     )
     .setTimestamp();
 
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [embed],
   });
 }
 
 /**
- * 處理 /permission mode 指令
+ * 處理 /permission check 指令
  */
-async function handleMode(interaction: ChatInputCommandInteraction): Promise<void> {
-  const mode = interaction.options.getString('mode') as 'everyone' | 'user' | 'role';
+async function handleCheck(interaction: ChatInputCommandInteraction): Promise<void> {
+  const targetUser = interaction.options.getUser('user') || interaction.user;
   const guild = interaction.guild;
   
   if (!guild) {
@@ -417,46 +424,45 @@ async function handleMode(interaction: ChatInputCommandInteraction): Promise<voi
     return;
   }
 
+  // 異步操作需要先 defer
+  await interaction.deferReply();
+
   // 檢查權限
   const permissionService = PermissionService.getInstance();
-  const checkResult = await permissionService.checkPermission(
-    interaction.user.id,
+  const userPermission = await permissionService.checkPermission(
+    targetUser.id,
     guild.id,
-    'admin'
+    'user'
   );
 
-  if (!checkResult.allowed) {
-    await interaction.reply({
-      content: '❌ 您沒有足夠的權限來設定權限模式',
-      flags: [MessageFlags.Ephemeral],
-    });
-    return;
-  }
+  const embed = new EmbedBuilder()
+    .setTitle('🔍 權限檢查結果')
+    .setColor(userPermission.allowed ? Colors.Green : Colors.Red)
+    .setDescription(
+      `用戶 **${targetUser.username}** 的權限狀態`
+    )
+    .addFields(
+      {
+        name: '👤 用戶',
+        value: `${targetUser.username} (\`${targetUser.id}\`)`,
+        inline: true,
+      },
+      {
+        name: '📊 權限狀態',
+        value: userPermission.allowed ? '✅ 已授權' : '❌ 未授權',
+        inline: true,
+      },
+      {
+        name: '📈 權限等級',
+        value: userPermission.level ? getLevelEmoji(userPermission.level) + ' ' + getLevelName(userPermission.level) : '無',
+        inline: true,
+      }
+    )
+    .setTimestamp();
 
-  const success = await permissionService.setPermissionMode(guild.id, mode, 'user');
-
-  if (success) {
-    const embed = new EmbedBuilder()
-      .setTitle('⚙️ 權限模式已更新')
-      .setColor(Colors.Green)
-      .setDescription(`權限模式已設定為 **${getModeName(mode)}**`)
-      .addFields(
-        {
-          name: '📝 說明',
-          value: getModeDescription(mode),
-        }
-      )
-      .setTimestamp();
-
-    await interaction.reply({
-      embeds: [embed],
-    });
-  } else {
-    await interaction.reply({
-      content: '❌ 設定權限模式失敗',
-      flags: [MessageFlags.Ephemeral],
-    });
-  }
+  await interaction.editReply({
+    embeds: [embed],
+  });
 }
 
 /**

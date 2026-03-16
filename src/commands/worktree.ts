@@ -4,6 +4,7 @@
  */
 
 import pathModule from 'path';
+import { TIMEOUTS } from '../config/constants.js';
 import {
   SlashCommandBuilder,
   SlashCommandSubcommandBuilder,
@@ -240,7 +241,7 @@ async function handleDelete(interaction: ChatInputCommandInteraction): Promise<v
   try {
     const response = await interaction.channel?.awaitMessageComponent({
       componentType: ComponentType.Button,
-      time: 30000,
+      time: TIMEOUTS.HTTP,
       filter: (i) => i.user.id === interaction.user.id,
     });
 

@@ -21,7 +21,6 @@ const command = new SlashCommandBuilder()
         { name: 'queue', value: 'queue' },
         { name: 'code', value: 'code' },
         { name: 'worktree', value: 'worktree' },
-        { name: 'voice', value: 'voice' },
         { name: 'permission', value: 'permission' },
       )
   );
@@ -82,11 +81,6 @@ function getAllCommandsHelp(): EmbedBuilder {
       {
         name: '/worktree',
         value: '管理 Git Worktree\n子指令：create, list, delete, pr',
-        inline: false,
-      },
-      {
-        name: '/voice',
-        value: '語音訊息轉錄設定\n子指令：status, set',
         inline: false,
       },
       {
@@ -170,14 +164,6 @@ function getCommandHelp(commandName: string): EmbedBuilder {
         { name: '/worktree list', value: '列出所有 worktree' },
         { name: '/worktree delete', value: '刪除 worktree' },
         { name: '/worktree pr', value: '建立 Pull Request' },
-      ],
-    },
-    voice: {
-      title: '🎤 /voice - 語音轉錄',
-      description: '語音訊息轉錄設定',
-      fields: [
-        { name: '/voice status', value: '查看轉錄狀態' },
-        { name: '/voice set', value: '設定 Gemini API Key' },
       ],
     },
     permission: {

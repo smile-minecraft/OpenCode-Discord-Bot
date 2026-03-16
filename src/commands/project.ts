@@ -246,6 +246,14 @@ export class ProjectCommandHandler {
     projectPath: string,
     alias?: string
   ): Promise<void> {
+    // 檢查 interaction 是否可以回覆
+    if (!interaction.isRepliable()) {
+      return;
+    }
+
+    // 異步操作需要先 defer
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
     try {
       const project = await this.projectManager.createProject({
         name,
@@ -271,9 +279,8 @@ export class ProjectCommandHandler {
         });
       }
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [embed],
-        flags: [MessageFlags.Ephemeral],
       });
     } catch (error) {
       const errorMessage = (error as Error).message;
@@ -284,9 +291,8 @@ export class ProjectCommandHandler {
         .setDescription(errorMessage)
         .setTimestamp();
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [embed],
-        flags: [MessageFlags.Ephemeral],
       });
     }
   }
@@ -388,6 +394,9 @@ export class ProjectCommandHandler {
 
     const channelId = interaction.channelId;
 
+    // 異步操作需要先 defer
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
     try {
       this.projectManager.bindProjectToChannel(projectId, channelId);
       await this.projectManager.save();
@@ -402,9 +411,8 @@ export class ProjectCommandHandler {
         )
         .setTimestamp();
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [embed],
-        flags: [MessageFlags.Ephemeral],
       });
     } catch (error) {
       const errorMessage = (error as Error).message;
@@ -415,9 +423,8 @@ export class ProjectCommandHandler {
         .setDescription(errorMessage)
         .setTimestamp();
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [embed],
-        flags: [MessageFlags.Ephemeral],
       });
     }
   }
@@ -446,6 +453,9 @@ export class ProjectCommandHandler {
       return;
     }
 
+    // 異步操作需要先 defer
+    await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
     try {
       const deleted = await this.projectManager.deleteProject(projectId);
 
@@ -461,9 +471,8 @@ export class ProjectCommandHandler {
           })
           .setTimestamp();
 
-        await interaction.reply({
+        await interaction.editReply({
           embeds: [embed],
-          flags: [MessageFlags.Ephemeral],
         });
       } else {
         throw new Error('無法刪除專案');
@@ -477,9 +486,8 @@ export class ProjectCommandHandler {
         .setDescription(errorMessage)
         .setTimestamp();
 
-      await interaction.reply({
+      await interaction.editReply({
         embeds: [embed],
-        flags: [MessageFlags.Ephemeral],
       });
     }
   }

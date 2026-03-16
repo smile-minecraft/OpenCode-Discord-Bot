@@ -32,7 +32,7 @@ export const connectCommand = new SlashCommandBuilder()
   .addSubcommand(
     new SlashCommandSubcommandBuilder()
       .setName('add')
-      .setDescription('新增提供商連接')
+      .setDescription('測試提供商連接（API Key 請透過環境變數設定）')
       .addStringOption((option) =>
         option
           .setName('provider')
@@ -44,12 +44,6 @@ export const connectCommand = new SlashCommandBuilder()
             { name: 'Anthropic (Claude)', value: 'anthropic' },
             { name: 'OpenAI (GPT)', value: 'openai' }
           )
-      )
-      .addStringOption((option) =>
-        option
-          .setName('api_key')
-          .setDescription('API Key (將加密儲存)')
-          .setRequired(true)
       )
   )
   .addSubcommand(
@@ -150,6 +144,8 @@ async function handleConnectList(
   interaction: ChatInputCommandInteraction,
   guildId: string
 ): Promise<void> {
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
   const providerService = getProviderService();
   const providers = await providerService.getProviders(guildId);
 
@@ -196,11 +192,33 @@ async function handleConnectAdd(
   guildId: string
 ): Promise<void> {
   const providerId = interaction.options.getString('provider') as OpenCodeProviderType;
-  const apiKey = interaction.options.getString('api_key');
+
+  // 從環境變數獲取對應的 API Key
+  const envKeyMap: Record<OpenCodeProviderType, string> = {
+    'opencode-zen': 'OPENCODE_ZEN_API_KEY',
+    'opencode-go': 'OPENCODE_GO_API_KEY',
+    'anthropic': 'ANTHROPIC_API_KEY',
+    'openai': 'OPENAI_API_KEY',
+  };
+
+  const envKeyName = envKeyMap[providerId];
+  const apiKey = process.env[envKeyName];
 
   if (!apiKey) {
     await interaction.reply({
-      content: '請提供 API Key',
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xff0000)
+          .setTitle('❌ 未設定 API Key')
+          .setDescription(`請在 .env 檔案中設定 ${envKeyName} 環境變數`)
+          .addFields({
+            name: '設定方式',
+            value: `1. 開啟專案根目錄的 .env 檔案
+2. 添加：${envKeyName}=your_api_key_here
+3. 重新啟動 Bot`,
+            inline: false,
+          }),
+      ],
       flags: [MessageFlags.Ephemeral],
     });
     return;
@@ -266,6 +284,8 @@ async function handleConnectRemove(
   interaction: ChatInputCommandInteraction,
   guildId: string
 ): Promise<void> {
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
   const providerId = interaction.options.getString('provider') as OpenCodeProviderType;
   const providerService = getProviderService();
   const provider = PROVIDERS[providerId];
@@ -309,6 +329,8 @@ async function handleConnectStatus(
   interaction: ChatInputCommandInteraction,
   guildId: string
 ): Promise<void> {
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
   const providerId = interaction.options.getString('provider') as OpenCodeProviderType | null;
   const providerService = getProviderService();
 

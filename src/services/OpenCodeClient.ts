@@ -5,6 +5,7 @@
 
 import { spawn, ChildProcess } from 'child_process';
 import logger from '../utils/logger.js';
+import { TIMEOUTS } from '../config/constants.js';
 
 // ============== 類型定義 ==============
 
@@ -65,9 +66,11 @@ export class OpenCodeError extends Error {
 /** 健康檢查重試次數 */
 const HEALTH_CHECK_MAX_RETRIES = 5;
 /** 健康檢查重試間隔（毫秒） */
-const HEALTH_CHECK_RETRY_INTERVAL = 1000;
+const HEALTH_CHECK_RETRY_INTERVAL = TIMEOUTS.HEALTH_CHECK;
 /** 預設主機地址 */
 const DEFAULT_HOST = '127.0.0.1';
+/** 垃圾回收間隔（毫秒） */
+const GARBAGE_COLLECTION_INTERVAL = 30000; // 30秒
 
 // ============== OpenCodeClient 類別 ==============
 
@@ -83,6 +86,8 @@ export class OpenCodeClient {
   private externalUrl: string | null = null;
   /** API Key（用於外部服務認證） */
   private apiKey: string | null = null;
+  /** 垃圾回收定時器 */
+  private gcInterval: NodeJS.Timeout | null = null;
 
   /**
    * 創建 OpenCodeClient 實例
@@ -91,6 +96,78 @@ export class OpenCodeClient {
     // 從環境變數讀取外部服務配置
     this.externalUrl = process.env.OPENCODE_API_URL || null;
     this.apiKey = process.env.OPENCODE_API_KEY || null;
+    
+    // 啟動垃圾回收機制
+    this.startGarbageCollection();
+  }
+
+  /**
+   * 啟動垃圾回收機制
+   * @description 定時檢查並清理已終止但未從 Map 中移除的進程
+   */
+  private startGarbageCollection(): void {
+    if (this.gcInterval) {
+      return;
+    }
+    
+    this.gcInterval = setInterval(() => {
+      this.cleanupStaleProcesses();
+    }, GARBAGE_COLLECTION_INTERVAL);
+    
+    // 防止定時器阻止程序退出
+    this.gcInterval.unref();
+    logger.debug('[OpenCodeClient] 垃圾回收機制已啟動');
+  }
+
+  /**
+   * 清理已終止的陳舊進程
+   * @description 檢查每個記錄的進程是否仍在運行，若已終止則從 Map 中移除
+   */
+  private cleanupStaleProcesses(): void {
+    const ports = Array.from(this.serverProcesses.keys());
+    let cleanedCount = 0;
+    
+    for (const port of ports) {
+      const process = this.serverProcesses.get(port);
+      if (!process) {
+        this.serverProcesses.delete(port);
+        cleanedCount++;
+        continue;
+      }
+      
+      // 檢查進程是否已終止 (pid 為 undefined 或 kill 失敗表示已終止)
+      if (process.pid === undefined || process.killed) {
+        logger.warn(`[OpenCodeClient:${port}] 清理陳舊進程記錄 (PID: ${process.pid})`);
+        this.serverProcesses.delete(port);
+        cleanedCount++;
+        continue;
+      }
+      
+      // 嘗試 kill(0) 檢查進程是否存在（信號 0 不會殺死進程，只檢查是否存在）
+      try {
+        process.kill(0);
+      } catch {
+        // 進程已終止但 Map 中仍有記錄
+        logger.warn(`[OpenCodeClient:${port}] 清理已崩潰的進程記錄 (PID: ${process.pid})`);
+        this.serverProcesses.delete(port);
+        cleanedCount++;
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      logger.debug(`[OpenCodeClient] 垃圾回收完成，清理了 ${cleanedCount} 個陳舊進程記錄`);
+    }
+  }
+
+  /**
+   * 停止垃圾回收機制
+   */
+  private stopGarbageCollection(): void {
+    if (this.gcInterval) {
+      clearInterval(this.gcInterval);
+      this.gcInterval = null;
+      logger.debug('[OpenCodeClient] 垃圾回收機制已停止');
+    }
   }
 
   /**
@@ -310,7 +387,7 @@ export class OpenCodeClient {
           projectPath: options.projectPath,
           initialPrompt: options.initialPrompt,
         }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(TIMEOUTS.HTTP),
       });
 
       if (!response.ok) {
@@ -424,7 +501,7 @@ export class OpenCodeClient {
           ...this.getAuthHeaders(),
         },
         body: JSON.stringify({ approved }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(TIMEOUTS.HTTP),
       });
 
       if (!response.ok) {
@@ -488,6 +565,9 @@ export class OpenCodeClient {
    * 清理所有伺服器
    */
   async cleanupAll(): Promise<void> {
+    // 停止垃圾回收機制
+    this.stopGarbageCollection();
+    
     const ports = this.getActiveServers();
     logger.info(`[OpenCodeClient] 清理 ${ports.length} 個活躍伺服器...`);
     
@@ -502,6 +582,14 @@ export class OpenCodeClient {
     }
     
     logger.info('[OpenCodeClient] 清理完成');
+  }
+
+  /**
+   * 銷毀客戶端實例
+   * @description 清理所有資源，包括停止 GC
+   */
+  async destroy(): Promise<void> {
+    await this.cleanupAll();
   }
 
   /**
@@ -532,7 +620,7 @@ export class OpenCodeClient {
           ...this.getAuthHeaders(),
         },
         body: JSON.stringify({ apiKey }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(TIMEOUTS.HTTP),
       });
 
       if (!response.ok) {

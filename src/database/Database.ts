@@ -3,7 +3,7 @@
  * @description 提供 JSON 檔案的讀寫操作，支援 Guild、Channel、Session 資料
  */
 
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import { Guild, type GuildData } from './models/Guild.js';
 import { Channel } from './models/Channel.js';
@@ -60,7 +60,6 @@ export class Database {
 
   public constructor(options: DatabaseOptions = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
-    this.ensureDataDirectory();
   }
 
   /**
@@ -84,6 +83,7 @@ export class Database {
    * 初始化資料庫
    */
   public async initialize(): Promise<void> {
+    await this.ensureDataDirectory();
     this.log('Database initialized');
   }
 
@@ -97,7 +97,7 @@ export class Database {
   /**
    * 確保數據目錄存在
    */
-  private ensureDataDirectory(): void {
+  private async ensureDataDirectory(): Promise<void> {
     const dirs = [
       this.options.dataPath,
       path.join(this.options.dataPath, 'guilds'),
@@ -107,8 +107,10 @@ export class Database {
     ];
 
     for (const dir of dirs) {
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+      try {
+        await fs.access(dir);
+      } catch {
+        await fs.mkdir(dir, { recursive: true });
         this.log(`Created directory: ${dir}`);
       }
     }
@@ -147,43 +149,35 @@ export class Database {
   /**
    * 讀取 JSON 檔案
    */
-  private readJsonFile<T>(filePath: string): T | null {
+  private async readJsonFile<T>(filePath: string): Promise<T | null> {
     try {
-      if (!fs.existsSync(filePath)) {
-        return null;
-      }
-      const content = fs.readFileSync(filePath, 'utf-8');
+      await fs.access(filePath);
+      const content = await fs.readFile(filePath, 'utf-8');
       return JSON.parse(content) as T;
-    } catch (error) {
-      throw new DatabaseError(
-        `Failed to read JSON file: ${filePath}`,
-        'READ_ERROR',
-        'readJsonFile'
-      );
+    } catch {
+      return null;
     }
   }
 
   /**
    * 寫入 JSON 檔案
    */
-  private writeJsonFile<T>(filePath: string, data: T): void {
-    try {
-      const content = JSON.stringify(data, null, 2);
-      fs.writeFileSync(filePath, content, 'utf-8');
-    } catch (error) {
-      throw new DatabaseError(
-        `Failed to write JSON file: ${filePath}`,
-        'WRITE_ERROR',
-        'writeJsonFile'
-      );
-    }
+  private async writeJsonFile<T>(filePath: string, data: T): Promise<void> {
+    const content = JSON.stringify(data, null, 2);
+    await fs.writeFile(filePath, content, 'utf-8');
   }
 
   /**
    * 建立備份
    */
-  private createBackup(filePath: string): void {
-    if (!this.options.autoBackup || !fs.existsSync(filePath)) return;
+  private async createBackup(filePath: string): Promise<void> {
+    if (!this.options.autoBackup) return;
+
+    try {
+      await fs.access(filePath);
+    } catch {
+      return;
+    }
 
     const backupDir = path.join(this.options.dataPath, 'backups');
     const fileName = path.basename(filePath, '.json');
@@ -191,11 +185,11 @@ export class Database {
     const backupPath = path.join(backupDir, `${fileName}_${timestamp}.json`);
 
     try {
-      fs.copyFileSync(filePath, backupPath);
+      await fs.copyFile(filePath, backupPath);
       this.log(`Created backup: ${backupPath}`);
 
       // 清理舊備份
-      this.cleanupBackups(backupDir, fileName);
+      await this.cleanupBackups(backupDir, fileName);
     } catch (error) {
       this.log(`Failed to create backup: ${error}`);
     }
@@ -204,22 +198,28 @@ export class Database {
   /**
    * 清理舊備份
    */
-  private cleanupBackups(backupDir: string, fileName: string): void {
-    const files = fs.readdirSync(backupDir)
+  private async cleanupBackups(backupDir: string, fileName: string): Promise<void> {
+    const entries = await fs.readdir(backupDir);
+    const files = entries
       .filter(f => f.startsWith(fileName) && f.endsWith('.json'))
-      .map(f => ({
-        name: f,
-        path: path.join(backupDir, f),
-        time: fs.statSync(path.join(backupDir, f)).mtime.getTime()
-      }))
-      .sort((a, b) => b.time - a.time);
+      .map(async f => {
+        const filePath = path.join(backupDir, f);
+        const stat = await fs.stat(filePath);
+        return {
+          name: f,
+          path: filePath,
+          time: stat.mtime.getTime()
+        };
+      });
+    
+    const sortedFiles = (await Promise.all(files)).sort((a, b) => b.time - a.time);
 
     // 刪除多餘的備份
-    if (files.length > this.options.backupCount) {
-      files.slice(this.options.backupCount).forEach(f => {
-        fs.unlinkSync(f.path);
+    if (sortedFiles.length > this.options.backupCount) {
+      for (const f of sortedFiles.slice(this.options.backupCount)) {
+        await fs.unlink(f.path);
         this.log(`Deleted old backup: ${f.name}`);
-      });
+      }
     }
   }
 
@@ -236,7 +236,7 @@ export class Database {
 
     // 嘗試從檔案讀取
     const filePath = this.getGuildFilePath(guildId);
-    const data = this.readJsonFile<GuildData>(filePath);
+    const data = await this.readJsonFile<GuildData>(filePath);
 
     if (data) {
       const guild = new Guild(data);
@@ -260,7 +260,7 @@ export class Database {
     }
 
     const filePath = this.getGuildFilePath(guildId);
-    const data = this.readJsonFile<GuildData>(filePath);
+    const data = await this.readJsonFile<GuildData>(filePath);
 
     if (data) {
       const guild = new Guild(data);
@@ -278,10 +278,10 @@ export class Database {
     const filePath = this.getGuildFilePath(guild.guildId);
     
     // 建立備份
-    this.createBackup(filePath);
+    await this.createBackup(filePath);
     
     // 寫入資料
-    this.writeJsonFile(filePath, guild.toJSON());
+    await this.writeJsonFile(filePath, guild.toJSON());
     this.guilds.set(guild.guildId, guild);
     this.log(`Saved guild: ${guild.guildId}`);
   }
@@ -292,15 +292,16 @@ export class Database {
   async deleteGuild(guildId: string): Promise<boolean> {
     const filePath = this.getGuildFilePath(guildId);
     
-    if (fs.existsSync(filePath)) {
-      this.createBackup(filePath);
-      fs.unlinkSync(filePath);
+    try {
+      await fs.access(filePath);
+      await this.createBackup(filePath);
+      await fs.unlink(filePath);
       this.guilds.delete(guildId);
       this.log(`Deleted guild: ${guildId}`);
       return true;
+    } catch {
+      return false;
     }
-    
-    return false;
   }
 
   /**
@@ -308,9 +309,15 @@ export class Database {
    */
   async getAllGuildIds(): Promise<string[]> {
     const guildsDir = path.join(this.options.dataPath, 'guilds');
-    if (!fs.existsSync(guildsDir)) return [];
     
-    return fs.readdirSync(guildsDir)
+    try {
+      await fs.access(guildsDir);
+    } catch {
+      return [];
+    }
+    
+    const files = await fs.readdir(guildsDir);
+    return files
       .filter(f => f.endsWith('.json'))
       .map(f => f.replace('.json', ''));
   }
@@ -383,8 +390,8 @@ export class Database {
     });
     const filePath = this.getSessionFilePath(session.sessionId);
     
-    this.createBackup(filePath);
-    this.writeJsonFile(filePath, session.toJSON());
+    await this.createBackup(filePath);
+    await this.writeJsonFile(filePath, session.toJSON());
     this.sessions.set(session.sessionId, session);
     this.log(`Created session: ${session.sessionId}`);
     
@@ -400,7 +407,7 @@ export class Database {
     }
 
     const filePath = this.getSessionFilePath(sessionId);
-    const data = this.readJsonFile<SessionData>(filePath);
+    const data = await this.readJsonFile<SessionData>(filePath);
 
     if (data) {
       const session = new Session(data);
@@ -417,8 +424,8 @@ export class Database {
   async updateSession(session: Session): Promise<void> {
     const filePath = this.getSessionFilePath(session.sessionId);
     
-    this.createBackup(filePath);
-    this.writeJsonFile(filePath, session.toJSON());
+    await this.createBackup(filePath);
+    await this.writeJsonFile(filePath, session.toJSON());
     this.sessions.set(session.sessionId, session);
     this.log(`Updated session: ${session.sessionId}`);
   }
@@ -429,15 +436,16 @@ export class Database {
   async deleteSession(sessionId: string): Promise<boolean> {
     const filePath = this.getSessionFilePath(sessionId);
     
-    if (fs.existsSync(filePath)) {
-      this.createBackup(filePath);
-      fs.unlinkSync(filePath);
+    try {
+      await fs.access(filePath);
+      await this.createBackup(filePath);
+      await fs.unlink(filePath);
       this.sessions.delete(sessionId);
       this.log(`Deleted session: ${sessionId}`);
       return true;
+    } catch {
+      return false;
     }
-    
-    return false;
   }
 
   /**
@@ -445,13 +453,18 @@ export class Database {
    */
   async getSessionsByChannel(channelId: string): Promise<Session[]> {
     const sessionsDir = path.join(this.options.dataPath, 'sessions');
-    if (!fs.existsSync(sessionsDir)) return [];
     
+    try {
+      await fs.access(sessionsDir);
+    } catch {
+      return [];
+    }
+    
+    const files = (await fs.readdir(sessionsDir)).filter(f => f.endsWith('.json'));
     const sessions: Session[] = [];
-    const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
     
     for (const file of files) {
-      const data = this.readJsonFile<SessionData>(path.join(sessionsDir, file));
+      const data = await this.readJsonFile<SessionData>(path.join(sessionsDir, file));
       if (data && data.channelId === channelId) {
         sessions.push(new Session(data));
       }
@@ -469,8 +482,8 @@ export class Database {
     const project = new Project(data);
     const filePath = this.getProjectFilePath(project.projectId);
     
-    this.createBackup(filePath);
-    this.writeJsonFile(filePath, project.toJSON());
+    await this.createBackup(filePath);
+    await this.writeJsonFile(filePath, project.toJSON());
     this.projects.set(project.projectId, project);
     this.log(`Created project: ${project.projectId}`);
     
@@ -486,7 +499,7 @@ export class Database {
     }
 
     const filePath = this.getProjectFilePath(projectId);
-    const data = this.readJsonFile<ProjectData>(filePath);
+    const data = await this.readJsonFile<ProjectData>(filePath);
 
     if (data) {
       const project = new Project(data);
@@ -503,8 +516,8 @@ export class Database {
   async updateProject(project: Project): Promise<void> {
     const filePath = this.getProjectFilePath(project.projectId);
     
-    this.createBackup(filePath);
-    this.writeJsonFile(filePath, project.toJSON());
+    await this.createBackup(filePath);
+    await this.writeJsonFile(filePath, project.toJSON());
     this.projects.set(project.projectId, project);
     this.log(`Updated project: ${project.projectId}`);
   }
@@ -515,15 +528,16 @@ export class Database {
   async deleteProject(projectId: string): Promise<boolean> {
     const filePath = this.getProjectFilePath(projectId);
     
-    if (fs.existsSync(filePath)) {
-      this.createBackup(filePath);
-      fs.unlinkSync(filePath);
+    try {
+      await fs.access(filePath);
+      await this.createBackup(filePath);
+      await fs.unlink(filePath);
       this.projects.delete(projectId);
       this.log(`Deleted project: ${projectId}`);
       return true;
+    } catch {
+      return false;
     }
-    
-    return false;
   }
 
   /**
@@ -531,12 +545,17 @@ export class Database {
    */
   async getProjectByPath(projectPath: string): Promise<Project | null> {
     const projectsDir = path.join(this.options.dataPath, 'projects');
-    if (!fs.existsSync(projectsDir)) return null;
     
-    const files = fs.readdirSync(projectsDir).filter(f => f.endsWith('.json'));
+    try {
+      await fs.access(projectsDir);
+    } catch {
+      return null;
+    }
+    
+    const files = (await fs.readdir(projectsDir)).filter(f => f.endsWith('.json'));
     
     for (const file of files) {
-      const data = this.readJsonFile<ProjectData>(path.join(projectsDir, file));
+      const data = await this.readJsonFile<ProjectData>(path.join(projectsDir, file));
       if (data && data.path === projectPath) {
         return new Project(data);
       }
@@ -550,15 +569,24 @@ export class Database {
    */
   async getAllProjects(): Promise<Project[]> {
     const projectsDir = path.join(this.options.dataPath, 'projects');
-    if (!fs.existsSync(projectsDir)) return [];
     
-    return fs.readdirSync(projectsDir)
-      .filter(f => f.endsWith('.json'))
-      .map(f => {
-        const data = this.readJsonFile<ProjectData>(path.join(projectsDir, f));
-        return data ? new Project(data) : null;
-      })
-      .filter((p): p is Project => p !== null);
+    try {
+      await fs.access(projectsDir);
+    } catch {
+      return [];
+    }
+    
+    const files = (await fs.readdir(projectsDir)).filter(f => f.endsWith('.json'));
+    const projects: Project[] = [];
+    
+    for (const file of files) {
+      const data = await this.readJsonFile<ProjectData>(path.join(projectsDir, file));
+      if (data) {
+        projects.push(new Project(data));
+      }
+    }
+    
+    return projects;
   }
 
   // ==================== 工具方法 ====================
@@ -576,16 +604,42 @@ export class Database {
   /**
    * 取得資料庫統計
    */
-  getStats(): {
+  async getStats(): Promise<{
     guildCount: number;
     sessionCount: number;
     projectCount: number;
     dataPath: string;
-  } {
+  }> {
+    const guildsDir = path.join(this.options.dataPath, 'guilds');
+    const sessionsDir = path.join(this.options.dataPath, 'sessions');
+    const projectsDir = path.join(this.options.dataPath, 'projects');
+    
+    let guildCount = this.guilds.size;
+    let sessionCount = this.sessions.size;
+    let projectCount = this.projects.size;
+    
+    try {
+      if (guildCount === 0) {
+        guildCount = (await fs.readdir(guildsDir)).filter(f => f.endsWith('.json')).length;
+      }
+    } catch { /* ignore */ }
+    
+    try {
+      if (sessionCount === 0) {
+        sessionCount = (await fs.readdir(sessionsDir)).filter(f => f.endsWith('.json')).length;
+      }
+    } catch { /* ignore */ }
+    
+    try {
+      if (projectCount === 0) {
+        projectCount = (await fs.readdir(projectsDir)).filter(f => f.endsWith('.json')).length;
+      }
+    } catch { /* ignore */ }
+    
     return {
-      guildCount: this.guilds.size || fs.readdirSync(path.join(this.options.dataPath, 'guilds')).filter(f => f.endsWith('.json')).length,
-      sessionCount: this.sessions.size || fs.readdirSync(path.join(this.options.dataPath, 'sessions')).filter(f => f.endsWith('.json')).length,
-      projectCount: this.projects.size || fs.readdirSync(path.join(this.options.dataPath, 'projects')).filter(f => f.endsWith('.json')).length,
+      guildCount,
+      sessionCount,
+      projectCount,
       dataPath: this.options.dataPath,
     };
   }
@@ -607,12 +661,17 @@ export class Database {
     }
 
     const sessionsDir = path.join(this.options.dataPath, 'sessions');
-    const sessions: SessionData[] = fs.existsSync(sessionsDir)
-      ? fs.readdirSync(sessionsDir)
-          .filter(f => f.endsWith('.json'))
-          .map(f => this.readJsonFile<SessionData>(path.join(sessionsDir, f)))
-          .filter((s): s is SessionData => s !== null)
-      : [];
+    let sessions: SessionData[] = [];
+    
+    try {
+      await fs.access(sessionsDir);
+      const files = (await fs.readdir(sessionsDir)).filter(f => f.endsWith('.json'));
+      sessions = [];
+      for (const f of files) {
+        const data = await this.readJsonFile<SessionData>(path.join(sessionsDir, f));
+        if (data) sessions.push(data);
+      }
+    } catch { /* ignore */ }
 
     const projects = await this.getAllProjects();
 

@@ -22,6 +22,7 @@ import {
 } from '../models/ModelData.js';
 import { getAvailableModels, getProviders } from '../services/ModelService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
+import { isAutocompleteAllowed } from '../utils/RateLimiter.js';
 
 // ============== Slash Command 定義 ==============
 
@@ -66,6 +67,9 @@ const modelCommand = new SlashCommandBuilder()
  */
 async function handleList(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId ?? undefined;
+  
+  // 異步操作需要先 defer
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
   
   // 嘗試從 CLI 獲取動態模型列表，如果失敗則使用靜態列表
   try {
@@ -115,14 +119,13 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
     
     const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
     
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [embed],
       components: [actionRow],
-      flags: [MessageFlags.Ephemeral],
     });
   } catch (error) {
     console.error('Error fetching models:', error);
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [
         new EmbedBuilder()
           .setColor(Colors.ERROR)
@@ -134,7 +137,6 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
             inline: false,
           }),
       ],
-      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -186,6 +188,9 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
   const modelId = interaction.options.getString('model');
   const guildId = interaction.guildId ?? undefined;
   
+  // 異步操作需要先 defer
+  await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+  
   // 獲取模型列表（從 CLI 或 fallback）
   try {
     const models = await getAvailableModels(guildId);
@@ -226,36 +231,33 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
 
     const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [embed],
       components: [actionRow],
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
 
   const model = models.find(m => m.id === modelId);
   if (!model) {
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [
         new EmbedBuilder()
           .setColor(Colors.ERROR)
           .setTitle('❌ 模型不存在')
           .setDescription(`無法找到模型: ${modelId}`),
       ],
-      flags: [MessageFlags.Ephemeral],
     });
     return;
   }
 
   const embed = buildModelInfoEmbed(model);
-  await interaction.reply({
+  await interaction.editReply({
     embeds: [embed],
-    flags: [MessageFlags.Ephemeral],
   });
   } catch (error) {
     console.error('Error fetching models:', error);
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [
         new EmbedBuilder()
           .setColor(Colors.ERROR)
@@ -267,7 +269,6 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
             inline: false,
           }),
       ],
-      flags: [MessageFlags.Ephemeral],
     });
   }
 }
@@ -396,6 +397,14 @@ function buildModelInfoEmbed(model: ModelDefinition | undefined): EmbedBuilder {
  * @param interaction - Autocomplete 交互實例
  */
 async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const userId = interaction.user.id;
+  
+  // Rate limit check for autocomplete
+  if (!isAutocompleteAllowed(userId)) {
+    await interaction.respond([]);
+    return;
+  }
+  
   const focusedOption = interaction.options.getFocused(true);
   const query = focusedOption.value.toLowerCase();
   const guildId = interaction.guildId ?? undefined;

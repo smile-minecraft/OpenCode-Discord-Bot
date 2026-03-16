@@ -43,6 +43,16 @@ const ENCRYPTION_KEY = (() => {
   return key;
 })();
 
+// 加密鹽值 - 使用環境變數或生成隨機鹽
+const ENCRYPTION_SALT = (() => {
+  const envSalt = process.env.API_KEY_ENCRYPTION_SALT;
+  if (envSalt) {
+    return envSalt;
+  }
+  // 生成隨機 16 字節鹽值並轉為 hex
+  return crypto.randomBytes(16).toString('hex');
+})();
+
 const ALGORITHM = 'aes-256-gcm';
 
 /**
@@ -52,7 +62,7 @@ const ALGORITHM = 'aes-256-gcm';
  */
 function encrypt(text: string): string {
   const iv = crypto.randomBytes(16);
-  const key = crypto.scryptSync(ENCRYPTION_KEY, 'salt', 32);
+  const key = crypto.scryptSync(ENCRYPTION_KEY, ENCRYPTION_SALT, 32);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
   
   let encrypted = cipher.update(text, 'utf8', 'hex');
@@ -68,21 +78,43 @@ function encrypt(text: string): string {
  * 解密字串
  * @param encryptedText - 加密的文字
  * @returns 解密後的文字
+ * @throws 如果解密失敗
  */
 function decrypt(encryptedText: string): string {
-  const [ivHex, authTagHex, encrypted] = encryptedText.split(':');
-  
-  const iv = Buffer.from(ivHex, 'hex');
-  const authTag = Buffer.from(authTagHex, 'hex');
-  const key = crypto.scryptSync(ENCRYPTION_KEY, 'salt', 32);
-  
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-  
-  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  
-  return decrypted;
+  try {
+    const parts = encryptedText.split(':');
+    if (parts.length !== 3) {
+      throw new Error('Invalid encrypted data format');
+    }
+    
+    const [ivHex, authTagHex, encrypted] = parts;
+    
+    if (!ivHex || !authTagHex || !encrypted) {
+      throw new Error('Invalid encrypted data components');
+    }
+    
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const key = crypto.scryptSync(ENCRYPTION_KEY, ENCRYPTION_SALT, 32);
+    
+    if (iv.length !== 16) {
+      throw new Error('Invalid IV length');
+    }
+    
+    if (authTag.length !== 16) {
+      throw new Error('Invalid auth tag length');
+    }
+    
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+    decipher.setAuthTag(authTag);
+    
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  } catch (error) {
+    throw new Error(`Decryption failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }
 
 // ============== 類型定義 ==============
@@ -96,6 +128,7 @@ export type ProviderConnection = {
   connectedAt?: string;
   lastValidated?: string;
   validationError?: string;
+  models?: string[];          // 儲存的模型列表（用於 OpenCode 等不支持 /models API 的提供商）
 };
 
 // ============== Provider Service ==============
@@ -107,6 +140,16 @@ export type ProviderConnection = {
 export class ProviderService {
   private static instance: ProviderService;
   private db: Database;
+
+  /**
+   * 提供商環境變數映射
+   */
+  private readonly providerEnvMap: Record<string, string> = {
+    'opencode-zen': 'OPENCODE_ZEN_API_KEY',
+    'opencode-go': 'OPENCODE_GO_API_KEY',
+    'anthropic': 'ANTHROPIC_API_KEY',
+    'openai': 'OPENAI_API_KEY',
+  };
 
   /**
    * 私有構造函數（單例模式）
@@ -216,6 +259,52 @@ export class ProviderService {
    */
   async addProvider(guildId: string, providerId: OpenCodeProviderType, apiKey: string): Promise<ValidationResult> {
     try {
+      // OpenCode providers (opencode-zen, opencode-go) skip API validation
+      // because /models endpoint returns 404 and chat completion returns "Model not supported"
+      const isOpenCodeProvider = providerId === 'opencode-zen' || providerId === 'opencode-go';
+      
+      if (isOpenCodeProvider) {
+        // Basic format check: minimum length validation for API key
+        const minKeyLength = 10;
+        if (!apiKey || apiKey.trim().length < minKeyLength) {
+          const error = `API key must be at least ${minKeyLength} characters`;
+          logger.error(`[ProviderService] Invalid API key format for provider ${providerId}`, {
+            guildId,
+            providerId,
+          });
+          
+          await this.setProvider(guildId, providerId, {
+            connected: false,
+            connectedAt: new Date().toISOString(),
+            validationError: error,
+          });
+          
+          return { valid: false, error };
+        }
+        
+        // Get default models based on provider
+        const defaultModels = this.getOpenCodeDefaultModels(providerId);
+        
+        // Encrypt and save API key with connected: true
+        const encryptedApiKey = encrypt(apiKey);
+        
+        await this.setProvider(guildId, providerId, {
+          apiKey: encryptedApiKey,
+          connected: true,
+          connectedAt: new Date().toISOString(),
+          lastValidated: new Date().toISOString(),
+          models: defaultModels,
+        });
+        
+        logger.info(`[ProviderService] Successfully added OpenCode provider ${providerId} for guild ${guildId} (validation skipped)`);
+        
+        return {
+          valid: true,
+          models: defaultModels,
+        };
+      }
+      
+      // For other providers (anthropic, openai), use existing validation logic
       // 建立客戶端進行驗證
       const client = createOpenCodeCloudClient(apiKey, providerId);
       
@@ -223,6 +312,13 @@ export class ProviderService {
       const validationResult = await client.validateApiKey();
       
       if (!validationResult.valid) {
+        // 記錄驗證失敗
+        logger.error(`[ProviderService] Failed to validate provider ${providerId}`, {
+          guildId,
+          providerId,
+          error: validationResult.error,
+        });
+        
         // 保存連接但標記為未連接
         await this.setProvider(guildId, providerId, {
           connected: false,
@@ -241,6 +337,7 @@ export class ProviderService {
         connected: true,
         connectedAt: new Date().toISOString(),
         lastValidated: new Date().toISOString(),
+        models: validationResult.models,
       });
 
       logger.info(`[ProviderService] Successfully added provider ${providerId} for guild ${guildId}`);
@@ -265,6 +362,34 @@ export class ProviderService {
       };
     }
   }
+  
+  /**
+   * 取得 OpenCode 提供商的預設模型列表
+   * @param providerId - Provider ID
+   * @returns 預設模型 ID 數組
+   */
+  private getOpenCodeDefaultModels(providerId: OpenCodeProviderType): string[] {
+    switch (providerId) {
+      case 'opencode-zen':
+        // OpenCode Zen: GPT-5, Claude Opus, etc.
+        return [
+          'opencode/gpt-5.2-codex',
+          'opencode/gpt-5-sierra',
+          'opencode/claude-opus-4-20250514',
+          'opencode/claude-sonnet-4-20250514',
+        ];
+      case 'opencode-go':
+        // OpenCode Go: GLM-5, Kimi K2.5, MiniMax M2.5
+        return [
+          'opencode-go/glm-5',
+          'opencode-go/kimi-k2.5',
+          'opencode-go/minimax-m2.5',
+          'opencode-go/minimax-m2.5-free',
+        ];
+      default:
+        return [];
+    }
+  }
 
   /**
    * 重新驗證提供商連接
@@ -284,7 +409,32 @@ export class ProviderService {
 
     try {
       // 解密 API Key
-      const apiKey = decrypt(connection.apiKey);
+      let apiKey: string;
+      try {
+        apiKey = decrypt(connection.apiKey);
+      } catch (decryptError) {
+        const errorMsg = decryptError instanceof Error ? decryptError.message : 'Decryption failed';
+        logger.error('[ProviderService] Failed to decrypt API key during validation', {
+          guildId,
+          providerId,
+          error: errorMsg,
+        });
+        
+        const envKey = this.getProviderEnvKey(providerId);
+        
+        // 更新為無效狀態
+        await this.setProvider(guildId, providerId, {
+          ...connection,
+          connected: false,
+          lastValidated: new Date().toISOString(),
+          validationError: `API key decryption failed. Please set ${envKey} environment variable`,
+        });
+        
+        return {
+          valid: false,
+          error: `API key decryption failed. Please set ${envKey} environment variable`,
+        };
+      }
       
       // 建立客戶端進行驗證
       const client = createOpenCodeCloudClient(apiKey, providerId);
@@ -333,13 +483,56 @@ export class ProviderService {
     try {
       return decrypt(connection.apiKey);
     } catch (error) {
-      logger.error('[ProviderService] Failed to decrypt API key', {
-        error: error instanceof Error ? error.message : String(error),
-        guildId,
-        providerId,
-      });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // 檢測是否是金鑰不匹配問題（常見於環境變數更改後）
+      if (errorMessage.includes('Unsupported state') || errorMessage.includes('authentication')) {
+        const envKey = this.getProviderEnvKey(providerId);
+        logger.error(`[ProviderService] API key decryption failed - encryption key may have changed. Please set ${envKey} environment variable`, {
+          guildId,
+          providerId,
+          envKey,
+          error: errorMessage,
+        });
+      } else {
+        logger.error('[ProviderService] Failed to decrypt API key', {
+          error: errorMessage,
+          guildId,
+          providerId,
+        });
+      }
+      
       return null;
     }
+  }
+
+  /**
+   * 從環境變數獲取 API Key
+   * @param providerId - Provider ID
+   * @returns API Key（如果環境變數已設定）
+   */
+  getApiKeyFromEnv(providerId: string): string | null {
+    const envKey = this.providerEnvMap[providerId];
+    if (!envKey) {
+      logger.warn(`[ProviderService] Unknown provider: ${providerId}`);
+      return null;
+    }
+    
+    const apiKey = process.env[envKey];
+    if (!apiKey) {
+      logger.debug(`[ProviderService] Environment variable not set: ${envKey}`);
+    }
+    
+    return apiKey || null;
+  }
+
+  /**
+   * 獲取提供商環境變數名稱
+   * @param providerId - Provider ID
+   * @returns 環境變數名稱
+   */
+  getProviderEnvKey(providerId: string): string | null {
+    return this.providerEnvMap[providerId] || null;
   }
 
   /**
@@ -360,6 +553,51 @@ export class ProviderService {
   async hasConnectedProvider(guildId: string): Promise<boolean> {
     const connected = await this.listConnectedProviders(guildId);
     return connected.length > 0;
+  }
+
+  /**
+   * 獲取提供商已儲存的模型列表
+   * @param guildId - Guild ID
+   * @param providerId - Provider ID
+   * @returns 儲存的模型 ID 數組（如果存在）
+   */
+  async getStoredModels(guildId: string, providerId: string): Promise<string[] | null> {
+    const connection = await this.getProvider(guildId, providerId);
+    if (!connection || !connection.connected) {
+      return null;
+    }
+    return connection.models || null;
+  }
+
+  /**
+   * 清除所有無法解密的提供商配置
+   * @param guildId - Guild ID
+   * @returns 被清除的提供商數量
+   */
+  async clearInvalidProviders(guildId: string): Promise<number> {
+    const providers = await this.getProviders(guildId);
+    let clearedCount = 0;
+
+    for (const [providerId, connection] of Object.entries(providers)) {
+      if (connection.apiKey) {
+        try {
+          // 嘗試解密
+          decrypt(connection.apiKey);
+        } catch (error) {
+          // 解密失敗，清除這個 provider
+          logger.warn('[ProviderService] Clearing invalid provider configuration', {
+            guildId,
+            providerId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          
+          await this.removeProvider(guildId, providerId as OpenCodeProviderType);
+          clearedCount++;
+        }
+      }
+    }
+
+    return clearedCount;
   }
 }
 

@@ -18,6 +18,7 @@ import { DEFAULT_MODEL, getProviderDisplayName } from '../models/ModelData.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
 import { log as logger } from '../utils/logger.js';
+import { isAutocompleteAllowed } from '../utils/RateLimiter.js';
 
 // ============== 指令定義 ==============
 
@@ -57,24 +58,11 @@ const command = new SlashCommandBuilder()
           .setAutocomplete(true)
       )
   )
-  .addSubcommand((subcommand) =>
-    subcommand
-      .setName('gemini_key')
-      .setDescription('設定 Gemini API Key (語音轉錄用)')
-      .addStringOption((option) =>
-        option
-          .setName('api_key')
-          .setDescription('Gemini API Key')
-          .setRequired(true)
-      )
-  );
-
 // ============== 設定項目 ==============
 
 interface SetupConfig {
   opencodePath?: string;
   defaultModel?: string;
-  geminiApiKey?: string;
   configured: boolean;
 }
 
@@ -95,9 +83,6 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       break;
     case 'model':
       await handleModel(interaction);
-      break;
-    case 'gemini_key':
-      await handleGeminiKey(interaction);
       break;
     default:
       await interaction.reply({
@@ -147,10 +132,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
       name: '🧠 預設 AI 模型',
       value: config.defaultModel ? `✅ 已設定: ${config.defaultModel}` : '❌ 未設定',
     },
-    {
-      name: '🎙️ Gemini API Key',
-      value: config.geminiApiKey ? '✅ 已設定' : '⚠️ 可選（用於語音轉錄）',
-    },
   ];
 
   embed.addFields(statusFields);
@@ -182,11 +163,6 @@ async function handleStart(interaction: ChatInputCommandInteraction): Promise<vo
         .setValue('action:model')
         .setEmoji('🧠')
         .setDescription('選擇預設 AI 模型'),
-      new StringSelectMenuOptionBuilder()
-        .setLabel('設定 Gemini Key')
-        .setValue('action:gemini')
-        .setEmoji('🎙️')
-        .setDescription('設定 Gemini API Key（可選）'),
       new StringSelectMenuOptionBuilder()
         .setLabel('查看狀態')
         .setValue('action:status')
@@ -231,11 +207,6 @@ async function handleStatus(interaction: ChatInputCommandInteraction): Promise<v
       {
         name: '🧠 預設 AI 模型',
         value: config.defaultModel ? `✅ ${config.defaultModel}` : '❌ 未設定',
-        inline: true,
-      },
-      {
-        name: '🎙️ Gemini API Key',
-        value: config.geminiApiKey ? '✅ 已設定' : '⚠️ 未設定（可選）',
         inline: true,
       }
     );
@@ -399,62 +370,6 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
   }
 }
 
-/**
- * 處理 gemini_key 子命令
- */
-async function handleGeminiKey(interaction: ChatInputCommandInteraction): Promise<void> {
-  const apiKey = interaction.options.getString('api_key', true);
-
-  const guildId = interaction.guildId;
-  if (!guildId) {
-    await interaction.reply({
-      content: '❌ 此命令只能在伺服器中使用',
-      ephemeral: true
-    });
-    return;
-  }
-
-  // 簡單驗證 key 格式
-  if (apiKey.length < 20) {
-    await interaction.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(Colors.ERROR)
-          .setTitle('❌ API Key 格式無效')
-          .setDescription('請輸入正確的 Gemini API Key'),
-      ],
-      flags: ['Ephemeral'],
-    });
-    return;
-  }
-
-  // 保存 API Key
-  await saveConfig(guildId, 'geminiApiKey', apiKey);
-
-  const embed = new EmbedBuilder()
-    .setColor(Colors.SUCCESS)
-    .setTitle('✅ Gemini API Key 已設定')
-    .setDescription('API Key 已成功保存！')
-    .addFields(
-      {
-        name: '🎙️ 功能啟用',
-        value: '現在可以使用語音轉錄功能了',
-        inline: false,
-      },
-      {
-        name: '⚠️ 安全性提醒',
-        value: '請勿將 API Key 分享給他人',
-        inline: false,
-      }
-    )
-    .setTimestamp();
-
-  await interaction.reply({
-    embeds: [embed],
-    flags: ['Ephemeral'],
-  });
-}
-
 // ============== 輔助函數 ==============
 
 /**
@@ -468,7 +383,6 @@ async function getCurrentConfig(guildId: string): Promise<SetupConfig> {
     return {
       opencodePath: guild?.settings?.opencodePath || process.env.OPENCODE_PATH,
       defaultModel: guild?.settings?.defaultModel || process.env.DEFAULT_MODEL || DEFAULT_MODEL,
-      geminiApiKey: guild?.settings?.geminiApiKey || process.env.GEMINI_API_KEY,
       configured: !!(guild?.settings?.opencodePath),
     };
   } catch (error) {
@@ -491,10 +405,6 @@ function getMissingConfigItems(config: SetupConfig): string[] {
   }
   if (!config.defaultModel) {
     items.push('`/setup model <model_id>` - 設定預設 AI 模型');
-  }
-  // Gemini API Key 是可選的
-  if (!config.geminiApiKey) {
-    items.push('`/setup gemini_key <key>` - 設定 Gemini API Key (可選)');
   }
 
   return items;
@@ -524,8 +434,6 @@ async function saveConfig(guildId: string, key: string, value: string): Promise<
     // 保存設定到 settings 的正確欄位
     if (key === 'opencodePath') {
       guild.settings.opencodePath = value;
-    } else if (key === 'geminiApiKey') {
-      guild.settings.geminiApiKey = value;
     } else if (key === 'defaultModel') {
       guild.settings.defaultModel = value;
     }
@@ -543,6 +451,14 @@ async function saveConfig(guildId: string, key: string, value: string): Promise<
  * @param interaction - Autocomplete 交互實例
  */
 async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const userId = interaction.user.id;
+  
+  // Rate limit check for autocomplete
+  if (!isAutocompleteAllowed(userId)) {
+    await interaction.respond([]);
+    return;
+  }
+  
   const focusedOption = interaction.options.getFocused(true);
   
   // 只處理 model_id 選項

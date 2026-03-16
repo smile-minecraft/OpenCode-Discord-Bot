@@ -40,6 +40,7 @@ import { registerSessionButtonHandlers } from '../handlers/SessionButtonHandler.
 
 // Utils
 import { log as logger } from '../utils/logger.js';
+import { isButtonAllowed } from '../utils/RateLimiter.js';
 
 // 服務
 import { getSessionManager } from '../services/SessionManager.js';
@@ -54,7 +55,6 @@ import { agent, handleAutocomplete as handleAgentAutocomplete } from '../command
 import { queueCommand, handleQueueCommand } from '../commands/queue.js';
 import { codeCommand, handleCodeCommand } from '../commands/code.js';
 import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js';
-import { createVoiceCommand, handleVoiceCommand } from '../commands/voice.js';
 import { permissionCommand, executePermissionCommand } from '../commands/permission.js';
 import { command as helpCommand, execute as helpExecute } from '../commands/help.js';
 import { setupCommand, handleSetupCommand, handleSetupAutocomplete } from '../commands/index.js';
@@ -224,8 +224,15 @@ export class DiscordClient extends Client {
     // 記錄啟動時間
     this.startedAt = new Date();
 
-    // 註冊事件監聽器
-    this.registerEventListeners();
+    // 註冊事件監聽器 - 使用 try-catch 防止未處理的 Promise Rejection
+    try {
+      this.registerEventListeners();
+    } catch (error) {
+      logger.error('[Client] Failed to register event listeners', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
   }
 
   /**
@@ -383,7 +390,6 @@ export class DiscordClient extends Client {
         queueCommand,
         codeCommand,
         worktreeCommand,
-        createVoiceCommand(),
         permissionCommand,
         helpCommand,
         setupCommand,
@@ -718,9 +724,6 @@ export class DiscordClient extends Client {
           case 'action:model':
             guideContent = '請使用 `/setup model` 指令選擇預設模型';
             break;
-          case 'action:gemini':
-            guideContent = '請使用 `/setup gemini_key` 指令設定 Gemini API Key（用於語音轉錄）';
-            break;
           case 'action:status':
             guideContent = '請使用 `/setup status` 指令查看目前設定狀態';
             break;
@@ -925,27 +928,35 @@ export class DiscordClient extends Client {
    * @description 在此註冊所有 Modal 處理器
    */
   private registerModalHandlers(): void {
-    // === Project Modal Handler ===
-    this.modalHandler.register({
-      customId: 'project:modal:add',
-      callback: async (interaction) => {
-        const name = interaction.fields.getTextInputValue('project_name');
-        const path = interaction.fields.getTextInputValue('project_path');
-        const alias = interaction.fields.getTextInputValue('project_alias');
-        
-        // 創建專案
-        const embed = new EmbedBuilder()
-          .setTitle('✅ 專案已新增')
-          .setDescription(`已新增專案: ${name}`)
-          .addFields(
-            { name: '路徑', value: path, inline: true },
-            { name: '別名', value: alias || '無', inline: true }
-          );
-        
-        await interaction.reply({ embeds: [embed], flags: ['Ephemeral'] });
-      },
-      description: '新增專案表單',
-    });
+    // 使用 try-catch 防止 Modal Handler 註冊失敗導致崩潰
+    try {
+      // === Project Modal Handler ===
+      this.modalHandler.register({
+        customId: 'project:modal:add',
+        callback: async (interaction) => {
+          const name = interaction.fields.getTextInputValue('project_name');
+          const path = interaction.fields.getTextInputValue('project_path');
+          const alias = interaction.fields.getTextInputValue('project_alias');
+          
+          // 創建專案
+          const embed = new EmbedBuilder()
+            .setTitle('✅ 專案已新增')
+            .setDescription(`已新增專案: ${name}`)
+            .addFields(
+              { name: '路徑', value: path, inline: true },
+              { name: '別名', value: alias || '無', inline: true }
+            );
+          
+          await interaction.reply({ embeds: [embed], flags: ['Ephemeral'] });
+        },
+        description: '新增專案表單',
+      });
+    } catch (error) {
+      logger.error('[ModalHandler] Failed to register modal handlers', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    }
 
     const modals = this.modalHandler.getRegisteredModals();
     logger.info(`[ModalHandler] Registered ${modals.length} modals`);
@@ -985,6 +996,15 @@ export class DiscordClient extends Client {
 
       // 根據 interaction 類型分發
       if (interaction.isButton()) {
+        // Rate limit check for buttons
+        const userId = interaction.user.id;
+        if (!isButtonAllowed(userId)) {
+          await interaction.reply({
+            content: '⚠️ 您點擊太快了，請稍後再試',
+            flags: ['Ephemeral'],
+          });
+          return;
+        }
         await this.buttonHandler.handle(interaction);
       } else if (interaction.isStringSelectMenu()) {
         await this.selectMenuHandler.handle(interaction);
@@ -1057,9 +1077,6 @@ export class DiscordClient extends Client {
           break;
         case 'worktree':
           await executeWorktreeCommand(interaction as any);
-          break;
-        case 'voice':
-          await handleVoiceCommand(interaction as any);
           break;
         case 'permission':
           await executePermissionCommand(interaction as any);

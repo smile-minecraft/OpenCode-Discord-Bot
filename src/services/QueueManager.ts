@@ -5,6 +5,7 @@
 
 import { EventEmitter } from 'events';
 import { log } from '../utils/logger.js';
+import { TIMEOUTS } from '../config/constants.js';
 
 // ==================== Types ====================
 
@@ -99,7 +100,7 @@ const DEFAULT_SETTINGS: QueueSettings = {
   continueOnFailure: false,
   freshContext: false,
   maxConcurrent: 1,
-  taskTimeout: 300000, // 5 分鐘
+  taskTimeout: TIMEOUTS.TASK, // 5 分鐘
   maxRetries: 3,
 };
 

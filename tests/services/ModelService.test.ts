@@ -122,19 +122,6 @@ describe('ModelService', () => {
       vi.clearAllMocks();
     });
 
-    // 跳過原因: ES Module mock 無法正確攔截動態 import
-    it.skip('應該從 connected providers 成功獲取模型列表', async () => {
-      // Mock createOpenCodeCloudClient to return a client with getModels
-      vi.mocked(createOpenCodeCloudClient).mockReturnValue({
-        getModels: vi.fn().mockResolvedValue(['opencode/big-pickle', 'opencode/test-model'])
-      } as any);
-      
-      const models = await getAvailableModels('test-guild');
-      
-      expect(models.length).toBeGreaterThan(0);
-      expect(models[0].id).toBe('opencode/big-pickle');
-    });
-
     it('沒有 connected providers 且沒有 allowFallback 時應該拋出錯誤', async () => {
       // Spy on ProviderService.getInstance to return no connected providers
       vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
@@ -197,17 +184,6 @@ describe('ModelService', () => {
       const models = await getDynamicModelList();
       
       expect(models).toEqual([]);
-    });
-
-    it.skip('應該返回模型 ID 數組', async () => {
-      // Setup cloud client mock - mock createOpenCodeCloudClient to return a client with getModels
-      vi.mocked(createOpenCodeCloudClient).mockReturnValue({
-        getModels: vi.fn().mockResolvedValue(['model1', 'model2', 'model3'])
-      } as any);
-
-      const models = await getDynamicModelList('test-guild');
-      
-      expect(models).toEqual(['model1', 'model2', 'model3']);
     });
   });
 

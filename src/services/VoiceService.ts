@@ -7,6 +7,7 @@ import path from 'path';
 import { createWriteStream, promises as fsPromises } from 'fs';
 import https from 'https';
 import { log as logger } from '../utils/logger.js';
+import { TIMEOUTS } from '../config/constants.js';
 
 // ============== 類型定義 ==============
 
@@ -78,11 +79,12 @@ export class VoiceService {
   }
 
   /**
-   * 設定 API Key
+   * 設定 API Key (已棄用，請使用環境變數 GEMINI_API_KEY)
+   * @deprecated 請透過環境變數設定 API Key
    */
   setApiKey(apiKey: string): void {
+    logger.warn('[VoiceService] setApiKey() 已棄用，請使用環境變數 GEMINI_API_KEY');
     this.apiKey = apiKey;
-    logger.info('[VoiceService] API Key 已更新');
   }
 
   /**
@@ -117,14 +119,14 @@ export class VoiceService {
         request.destroy();
         cleanup();
         reject(new Error('Download timeout'));
-      }, 60000);
+      }, TIMEOUTS.VOICE_DOWNLOAD);
       
-      const request = https.get(url, { timeout: 30000 }, (response) => {
+      const request = https.get(url, { timeout: TIMEOUTS.HTTP }, (response) => {
         if (response.statusCode === 302 || response.statusCode === 301) {
           // 處理重定向
           const redirectUrl = response.headers.location;
           if (redirectUrl) {
-            const redirectRequest = https.get(redirectUrl, { timeout: 30000 }, (redirectResponse) => {
+            const redirectRequest = https.get(redirectUrl, { timeout: TIMEOUTS.HTTP }, (redirectResponse) => {
               if (redirectResponse.statusCode !== 200) {
                 clearTimeout(timeout);
                 cleanup();
@@ -198,7 +200,7 @@ export class VoiceService {
    */
   private async transcribeWithGemini(audioPath: string): Promise<string> {
     if (!this.apiKey) {
-      throw new Error('GEMINI_API_KEY 未設定');
+      throw new Error('GEMINI_API_KEY 未設定。請透過環境變數設定 GEMINI_API_KEY');
     }
 
     // 讀取音頻檔案
@@ -304,7 +306,7 @@ export class VoiceService {
     if (!this.apiKey) {
       return {
         success: false,
-        error: 'API Key 未設定，請使用 /voice set 設定 GEMINI_API_KEY'
+        error: 'API Key 未設定。請透過環境變數 GEMINI_API_KEY 設定'
       };
     }
 

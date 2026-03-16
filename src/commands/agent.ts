@@ -23,6 +23,7 @@ import {
   type AgentDefinition,
 } from '../models/AgentData.js';
 import { Colors } from '../builders/EmbedBuilder.js';
+import { isAutocompleteAllowed } from '../utils/RateLimiter.js';
 
 // ============== Slash Command 定義 ==============
 
@@ -301,6 +302,14 @@ function buildAgentInfoEmbed(agent: AgentDefinition): EmbedBuilder {
  * @param interaction - Autocomplete 交互實例
  */
 async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const userId = interaction.user.id;
+  
+  // Rate limit check for autocomplete
+  if (!isAutocompleteAllowed(userId)) {
+    await interaction.respond([]);
+    return;
+  }
+  
   const focusedOption = interaction.options.getFocused(true);
   const query = focusedOption.value.toLowerCase();
   

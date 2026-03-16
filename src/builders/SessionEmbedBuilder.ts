@@ -6,8 +6,15 @@
 import { EmbedBuilder, ColorResolvable } from 'discord.js';
 import { Colors } from './EmbedBuilder.js';
 import type { Session, SessionStatus } from '../database/models/Session.js';
+import logger from '../utils/logger.js';
 
 // ============== 狀態常量 ==============
+
+/** Discord Embed Field Value 長度限制 */
+const MAX_FIELD_VALUE_LENGTH = 1024;
+
+/** Discord Embed 總長度限制 */
+const MAX_EMBED_LENGTH = 6000;
 
 /** Session 狀態映射 */
 const StatusConfig: Record<
@@ -180,15 +187,16 @@ export class SessionStatusEmbedBuilder {
           )
         : '進行中';
 
-      embed.addFields({
-        name: `${statusConfig.emoji} \`${session.sessionId}\``,
-        value: [
+      SessionStatusEmbedBuilder.addFieldWithTruncate(
+        embed,
+        `${statusConfig.emoji} \`${session.sessionId}\``,
+        [
           `📝 ${session.prompt.slice(0, 50)}${session.prompt.length > 50 ? '...' : ''}`,
           `🤖 ${session.model} | ⏱️ ${duration}`,
           `📅 ${startedDate}`,
         ].join('\n'),
-        inline: false,
-      });
+        false
+      );
     }
 
     if (sessions.length > 10) {
@@ -217,11 +225,12 @@ export class SessionStatusEmbedBuilder {
       );
 
     if (session.prompt) {
-      embed.addFields({
-        name: '📝 提示詞',
-        value: SessionStatusEmbedBuilder.truncate(session.prompt, 1024),
-        inline: false,
-      });
+      SessionStatusEmbedBuilder.addFieldWithTruncate(
+        embed,
+        '📝 提示詞',
+        session.prompt,
+        false
+      );
     }
 
     if (session.projectPath) {
@@ -254,11 +263,17 @@ export class SessionStatusEmbedBuilder {
 
     // 添加錯誤訊息（如果有）
     if (session.errorMessage) {
-      embed.addFields({
-        name: '❌ 錯誤訊息',
-        value: SessionStatusEmbedBuilder.truncate(session.errorMessage, 1024),
-        inline: false,
-      });
+      SessionStatusEmbedBuilder.addFieldWithTruncate(
+        embed,
+        '❌ 錯誤訊息',
+        session.errorMessage,
+        false
+      );
+    }
+
+    // 檢查並記錄 embed 長度
+    if (SessionStatusEmbedBuilder.isEmbedTooLong(embed)) {
+      logger.debug('[SessionEmbedBuilder] Embed 超過長度限制，已截斷');
     }
 
     return embed;
@@ -315,6 +330,64 @@ export class SessionStatusEmbedBuilder {
   // ============== 私有輔助方法 ==============
 
   /**
+   * 截斷字符串到指定長度
+   */
+  private static truncate(str: string, maxLength: number): string {
+    if (!str) return str;
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength - 3) + '...';
+  }
+
+  /**
+   * 截斷字符串到 Discord Field Value 限制 (1024 chars)
+   */
+  private static truncateFieldValue(value: string): string {
+    return SessionStatusEmbedBuilder.truncate(value, MAX_FIELD_VALUE_LENGTH);
+  }
+
+  /**
+   * 計算 Embed 的總長度
+   */
+  private static calculateEmbedLength(embed: EmbedBuilder): number {
+    const data = embed.toJSON();
+    let length = 0;
+
+    if (data.title) length += data.title.length;
+    if (data.description) length += data.description.length;
+    if (data.fields) {
+      for (const field of data.fields) {
+        length += field.name.length;
+        length += field.value.length;
+      }
+    }
+    if (data.footer) length += data.footer.text.length;
+    if (data.author) length += data.author.name.length;
+
+    return length;
+  }
+
+  /**
+   * 檢查 Embed 是否超過長度限制
+   */
+  private static isEmbedTooLong(embed: EmbedBuilder): boolean {
+    return SessionStatusEmbedBuilder.calculateEmbedLength(embed) > MAX_EMBED_LENGTH;
+  }
+
+  /**
+   * 添加字段並自動截斷過長的值
+   */
+  private static addFieldWithTruncate(
+    embed: EmbedBuilder,
+    name: string,
+    value: string,
+    inline?: boolean
+  ): EmbedBuilder {
+    const truncatedName = SessionStatusEmbedBuilder.truncate(name, 256); // Field name limit
+    const truncatedValue = SessionStatusEmbedBuilder.truncateFieldValue(value);
+    return embed.addFields({ name: truncatedName, value: truncatedValue, inline });
+  }
+
+  /**
    * 格式化時長
    */
   private static formatDuration(ms: number): string {
@@ -331,14 +404,6 @@ export class SessionStatusEmbedBuilder {
     } else {
       return `${seconds}秒`;
     }
-  }
-
-  /**
-   * 截斷字符串到指定長度
-   */
-  private static truncate(str: string, maxLength: number): string {
-    if (str.length <= maxLength) return str;
-    return str.substring(0, maxLength - 3) + '...';
   }
 }
 

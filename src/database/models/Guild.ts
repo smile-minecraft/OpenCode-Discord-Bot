@@ -3,6 +3,8 @@
  * @description Discord 伺服器資料結構
  */
 
+import { randomUUID } from 'crypto';
+
 export interface GuildData {
   /** 伺服器 ID */
   guildId: string;
@@ -107,8 +109,6 @@ export interface GuildSettings {
   allowedAgents: string[];
   /** OpenCode CLI 路徑 */
   opencodePath?: string;
-  /** Gemini API Key (語音轉錄) */
-  geminiApiKey?: string;
   /** AI 提供商連接設置 */
   providers?: Record<string, {
     apiKey?: string;  // 加密儲存
@@ -217,7 +217,7 @@ export class Guild implements GuildData {
   addToQueue(item: Omit<QueueItem, 'id' | 'createdAt' | 'status'>): QueueItem {
     const queueItem: QueueItem = {
       ...item,
-      id: `queue_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      id: `queue_${Date.now()}_${randomUUID().substring(0, 8)}`,
       status: 'pending',
       createdAt: new Date().toISOString(),
     };

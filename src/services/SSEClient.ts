@@ -5,6 +5,7 @@
 
 import { EventSource } from 'eventsource';
 import logger from '../utils/logger.js';
+import { TIMEOUTS } from '../config/constants.js';
 
 // ============== 類型定義 ==============
 
@@ -86,7 +87,7 @@ const DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_RECONNECT_DELAY = 1000;
 
 /** 最大重連延遲（毫秒） */
-const MAX_RECONNECT_DELAY = 30000;
+const MAX_RECONNECT_DELAY = TIMEOUTS.RECONNECT;
 
 // ============== SSEClient 類別 ==============
 

@@ -26,11 +26,5 @@ export {
   ModalIds,
 } from './project.js';
 
-// Voice Commands
-export {
-  createVoiceCommand,
-  handleVoiceCommand,
-} from './voice.js';
-
 // Setup Command
 export { command as setupCommand, execute as handleSetupCommand, handleAutocomplete as handleSetupAutocomplete } from './setup.js';

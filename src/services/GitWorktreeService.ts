@@ -7,6 +7,7 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import { EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder } from 'discord.js';
+import { TIMEOUTS } from '../config/constants.js';
 
 // ============== 類型定義 ==============
 
@@ -106,7 +107,7 @@ export class GitWorktreeService {
       const args = command.split(' ').filter(arg => arg.length > 0);
       const child = spawn('git', args.slice(1), {
         cwd: this.repoPath,
-        timeout: 30000,
+        timeout: TIMEOUTS.HTTP,
       });
 
       let stdout = '';
@@ -136,7 +137,7 @@ export class GitWorktreeService {
       setTimeout(() => {
         child.kill('SIGTERM');
         reject(new GitWorktreeError('Git command timed out', 'TIMEOUT'));
-      }, 30000);
+      }, TIMEOUTS.HTTP);
     });
   }
 

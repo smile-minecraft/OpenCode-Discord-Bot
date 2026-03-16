@@ -3,6 +3,8 @@
  * @description 定義所有可用的 AI 模型及其元數據
  */
 
+import { MODEL_CONFIG } from '../config/constants.js';
+
 // 模型供應商（支援靜態和動態提供商）
 export type ModelProvider = 'anthropic' | 'openai' | 'google' | 'xai' | 'cohere' | 'mistral' | 'opencode' | 'opencode-go' | 'opencode-zen' | 'github-copilot';
 
@@ -227,7 +229,7 @@ export const MODELS: ModelDefinition[] = [
 ];
 
 // 預設模型
-export const DEFAULT_MODEL = 'anthropic/claude-sonnet-4-20250514';
+export const DEFAULT_MODEL = MODEL_CONFIG.DEFAULT;
 
 // 按提供商分組模型
 export function getModelsByProvider(): Map<ModelProvider, ModelDefinition[]> {

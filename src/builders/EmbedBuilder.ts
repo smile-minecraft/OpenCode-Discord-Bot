@@ -18,6 +18,23 @@ export const Colors = {
   SECONDARY: 0x6B7280,
 } as const;
 
+// ============== Discord Embed 限制常量 ==============
+
+/** Discord Embed 總長度限制 */
+export const MAX_EMBED_LENGTH = 6000;
+
+/** Discord Embed Field Value 長度限制 */
+export const MAX_FIELD_VALUE_LENGTH = 1024;
+
+/** Discord Embed Field Name 長度限制 */
+export const MAX_FIELD_NAME_LENGTH = 256;
+
+/** Discord Embed 標題長度限制 */
+export const MAX_TITLE_LENGTH = 256;
+
+/** Discord Embed 描述長度限制 */
+export const MAX_DESCRIPTION_LENGTH = 4096;
+
 // ============== 基礎 Embed 構建器 ==============
 
 /**
@@ -28,6 +45,144 @@ export const Colors = {
 export class CustomEmbedBuilder extends EmbedBuilder {
   constructor() {
     super();
+  }
+
+  /**
+   * 截斷字符串到指定長度
+   * @param str 要截斷的字符串
+   * @param maxLength 最大長度
+   * @returns 截斷後的字符串
+   */
+  static truncate(str: string, maxLength: number): string {
+    if (!str) return str;
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength - 3) + '...';
+  }
+
+  /**
+   * 截斷 Embed Field Value 到 Discord 限制
+   * @param value Field Value
+   * @returns 截斷後的 value
+   */
+  static truncateFieldValue(value: string): string {
+    return CustomEmbedBuilder.truncate(value, MAX_FIELD_VALUE_LENGTH);
+  }
+
+  /**
+   * 截斷 Embed Field Name 到 Discord 限制
+   * @param name Field Name
+   * @returns 截斷後的 name
+   */
+  static truncateFieldName(name: string): string {
+    return CustomEmbedBuilder.truncate(name, MAX_FIELD_NAME_LENGTH);
+  }
+
+  /**
+   * 截斷 Embed Title 到 Discord 限制
+   * @param title Embed Title
+   * @returns 截斷後的 title
+   */
+  static truncateTitle(title: string): string {
+    return CustomEmbedBuilder.truncate(title, MAX_TITLE_LENGTH);
+  }
+
+  /**
+   * 截斷 Embed Description 到 Discord 限制
+   * @param description Embed Description
+   * @returns 截斷後的 description
+   */
+  static truncateDescription(description: string): string {
+    return CustomEmbedBuilder.truncate(description, MAX_DESCRIPTION_LENGTH);
+  }
+
+  /**
+   * 計算 Embed 的總長度
+   * @param embed 要計算的 Embed
+   * @returns 總長度
+   */
+  static calculateEmbedLength(embed: EmbedBuilder): number {
+    const data = embed.toJSON();
+    let length = 0;
+
+    // 計算標題長度
+    if (data.title) {
+      length += data.title.length;
+    }
+
+    // 計算描述長度
+    if (data.description) {
+      length += data.description.length;
+    }
+
+    // 計算字段長度
+    if (data.fields) {
+      for (const field of data.fields) {
+        length += field.name.length;
+        length += field.value.length;
+      }
+    }
+
+    // 計算 footer 長度
+    if (data.footer) {
+      length += data.footer.text.length;
+    }
+
+    // 計算 author 名稱長度
+    if (data.author) {
+      length += data.author.name.length;
+    }
+
+    return length;
+  }
+
+  /**
+   * 檢查 Embed 是否超過長度限制
+   * @param embed 要檢查的 Embed
+   * @returns 是否超過限制
+   */
+  static isEmbedTooLong(embed: EmbedBuilder): boolean {
+    return CustomEmbedBuilder.calculateEmbedLength(embed) > MAX_EMBED_LENGTH;
+  }
+
+  /**
+   * 添加字段並自動截斷過長的值
+   * @param name 字段名稱
+   * @param value 字段值
+   * @param inline 是否內聯
+   */
+  addFieldWithTruncate(name: string, value: string, inline?: boolean): this {
+    const truncatedName = CustomEmbedBuilder.truncateFieldName(name);
+    const truncatedValue = CustomEmbedBuilder.truncateFieldValue(value);
+    return super.addFields({ name: truncatedName, value: truncatedValue, inline });
+  }
+
+  /**
+   * 添加多個字段並自動截斷過長的值
+   * @param fields 字段陣列
+   */
+  addFieldsWithTruncate(...fields: Array<{ name: string; value: string; inline?: boolean }>): this {
+    const truncatedFields = fields.map(f => ({
+      name: CustomEmbedBuilder.truncateFieldName(f.name),
+      value: CustomEmbedBuilder.truncateFieldValue(f.value),
+      inline: f.inline,
+    }));
+    return super.addFields(...truncatedFields);
+  }
+
+  /**
+   * 設置描述並截斷過長的內容
+   * @param description 描述內容
+   */
+  setDescriptionWithTruncate(description: string): this {
+    return super.setDescription(CustomEmbedBuilder.truncateDescription(description));
+  }
+
+  /**
+   * 設置標題並截斷過長的內容
+   * @param title 標題內容
+   */
+  setTitleWithTruncate(title: string): this {
+    return super.setTitle(CustomEmbedBuilder.truncateTitle(title));
   }
 
   /**
