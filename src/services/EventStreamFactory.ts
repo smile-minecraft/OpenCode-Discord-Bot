@@ -71,15 +71,22 @@ export class SDKAdapterWrapper implements IEventStreamAdapter {
    * @param sessionId Session ID
    */
   connect(_port: number, sessionId: string): void {
-    // 在 SDK 模式下，事件流應該由外部通過 start() 提供
-    // 這裡保存 sessionId 供後續使用
+    // Dispose existing adapter first to prevent memory leak
+    if (this.adapter) {
+      this.adapter.dispose();
+      this.adapter = null;
+    }
+
+    // Clear existing handlers to prevent duplicate registration
+    this.handlers.clear();
+
     this.currentSessionId = sessionId;
     this.isActive = true;
 
-    // 創建新的適配器實例
+    // Create new adapter instance
     this.adapter = new SSEEventEmitterAdapter();
 
-    // 將內部事件轉發到訂閱者
+    // Register event forwarding - only once per adapter
     this.adapter.on('*', (event: unknown) => {
       const handlers = this.handlers.get('*');
       if (handlers) {

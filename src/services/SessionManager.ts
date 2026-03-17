@@ -126,13 +126,8 @@ export interface SessionExecutionResult {
     // 標記為啟動中
     session.start(sessionId, session.model, session.agent);
 
-    // 註冊到活動列表
-    this.activeSessions.set(sessionId, session);
-
-    // 更新頻道索引
-    const channelSessionSet = this.channelSessions.get(options.channelId) || new Set();
-    channelSessionSet.add(sessionId);
-    this.channelSessions.set(options.channelId, channelSessionSet);
+    // 注意：不要在此處立即註冊到 activeSessions
+    // 應該在 SDK 創建成功後才註冊，避免 Race Condition
 
     const port = this.getPort();
 
@@ -145,6 +140,7 @@ export interface SessionExecutionResult {
         } catch (error) {
           logger.error('[SessionManager] 伺服器啟動失敗', { error });
           session.fail('無法啟動 OpenCode 伺服器，請檢查配置');
+          await this.saveSession(session);
           throw error;
         }
       }
@@ -173,11 +169,33 @@ export interface SessionExecutionResult {
       // 4. 保存到資料庫
       await this.saveSession(session);
 
+      // 5. 只有在 SDK 創建成功後才註冊到活動列表 (避免 Race Condition)
+      this.activeSessions.set(sessionId, session);
+
+      // 6. 更新頻道索引
+      const channelSessionSet = this.channelSessions.get(options.channelId) || new Set();
+      channelSessionSet.add(sessionId);
+      this.channelSessions.set(options.channelId, channelSessionSet);
+
       logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSession.id}, Port: ${port}`);
     } catch (error) {
       logger.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
-      
+
+      // 嘗試清理 SDK session 如果已創建
+      if (session.opencodeSessionId) {
+        try {
+          logger.info(`[SessionManager] 嘗試清理 SDK Session: ${session.opencodeSessionId}`);
+          // Note: SDK 可能沒有 delete 方法，但我們應該嘗試中止
+          // await this.sdkAdapter.abortSession(session.opencodeSessionId);
+        } catch (cleanupError) {
+          logger.warn('[SessionManager] 清理 SDK Session 失敗:', cleanupError);
+        }
+      }
+
+      // 保存失敗狀態
       session.fail(error instanceof Error ? error.message : '未知錯誤');
+      await this.saveSession(session);
+      throw error; // Re-throw so caller knows it failed
     }
 
     return session;
@@ -230,15 +248,22 @@ export interface SessionExecutionResult {
 
   /**
    * 終止 Session
+   * @param sessionId Session ID（可選）
+   * @param channelId 頻道 ID（當 sessionId 未提供時使用）
    */
-  async abortSession(sessionId?: string): Promise<Session | null> {
-    // 如果沒有指定 sessionId，嘗試獲取當前頻道的活躍 Session
-    if (!sessionId) {
-      const activeSession = this.getActiveSessionByChannel(sessionId || '');
+  async abortSession(sessionId?: string, channelId?: string): Promise<Session | null> {
+    // 如果沒有指定 sessionId，嘗試從 channelId 獲取當前頻道的活躍 Session
+    if (!sessionId && channelId) {
+      const activeSession = this.getActiveSessionByChannel(channelId);
       if (!activeSession) {
         return null;
       }
       sessionId = activeSession.sessionId;
+    }
+
+    // 如果仍然沒有 sessionId，無法繼續
+    if (!sessionId) {
+      return null;
     }
 
     const session = this.activeSessions.get(sessionId);

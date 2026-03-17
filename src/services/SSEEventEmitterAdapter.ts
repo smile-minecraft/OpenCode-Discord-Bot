@@ -72,6 +72,7 @@ export type SSEEventTypeInternal =
   | 'message'
   | 'tool_request'
   | 'session_complete'
+  | 'waiting'
   | 'error'
   | 'connected'
   | 'disconnected';
@@ -149,7 +150,7 @@ const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
   'session.started': 'connected',
   'session.deleted': 'disconnected',
   'session.ended': 'session_complete',
-  'session.idle': 'session_complete',
+  'session.idle': 'waiting',
   'session.error': 'error',
   'session.compacted': 'session_complete',
   'error': 'error',
@@ -282,13 +283,15 @@ export class SSEEventEmitterAdapter
     }
 
     try {
+      // Stream timeout constant (30 seconds)
+      const STREAM_TIMEOUT = 30000;
+
       while (this.isProcessing) {
-        // 使用 AbortSignal 支援取消
+        // Use Promise.race with timeout to prevent hanging
         const result = await Promise.race([
           this.iterator.next(),
-          new Promise<IteratorResult<SDKEvent>>((resolve) => {
-            // 立即解析，讓迴圈繼續檢查 isProcessing
-            setTimeout(() => resolve({ done: true, value: undefined as unknown as SDKEvent }), 0);
+          new Promise<IteratorResult<SDKEvent>>((_, reject) => {
+            setTimeout(() => reject(new Error('Stream timeout')), STREAM_TIMEOUT);
           }),
         ]);
 
@@ -301,21 +304,31 @@ export class SSEEventEmitterAdapter
         this.handleSDKEvent(event);
       }
     } catch (error) {
-      // 忽略中止錯誤
+      // Ignore abort errors
       if (error instanceof Error && error.message === 'Aborted') {
         logger.debug('[SSEEventEmitterAdapter] 事件流已中止');
         return;
       }
 
-      logger.error('[SSEEventEmitterAdapter] 處理事件流時發生錯誤:', error);
+      // Log timeout errors specially
+      if (error instanceof Error && error.message === 'Stream timeout') {
+        logger.warn('[SSEEventEmitterAdapter] 事件流逾時');
+      } else {
+        logger.error('[SSEEventEmitterAdapter] 處理事件流時發生錯誤:', error);
+      }
 
       this.emitEvent('error', {
         sessionId: this.currentSessionId ?? undefined,
         error: error instanceof Error ? error.message : '未知錯誤',
       } as ErrorEventData);
     } finally {
-      // 確保發送 session_complete 事件
-      if (this.currentSessionId && this.isProcessing) {
+      // Cleanup references
+      this.isProcessing = false;
+      this.eventStreamRef = null;
+      this.iterator = null;
+
+      // Ensure session_complete is emitted if still processing
+      if (this.currentSessionId) {
         this.emitEvent('session_complete', {
           sessionId: this.currentSessionId,
         } as SessionCompleteEventData);
@@ -357,6 +370,13 @@ export class SSEEventEmitterAdapter
 
       case 'session_complete':
         this.emitEvent('session_complete', {
+          sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
+        } as SessionCompleteEventData);
+        break;
+
+      case 'waiting':
+        // session.idle means waiting for input - emit as 'waiting' event
+        this.emitEvent('waiting', {
           sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
         } as SessionCompleteEventData);
         break;

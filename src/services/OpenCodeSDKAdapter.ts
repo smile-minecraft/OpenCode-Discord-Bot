@@ -274,11 +274,11 @@ export class OpenCodeSDKAdapter {
     const adapter = new SSEEventEmitterAdapter();
     
     try {
-      // 調用 SDK 的 event.subscribe() 方法
+      // 調用 SDK 的 global.event() 方法
       // SDK 返回 Promise<ServerSentEventsResult>，需要 await
-      const eventStream = await client.event.subscribe();
+      const eventStream = await client.global.event();
       
-      // 啟動 Adapter
+      // 啟動 Adapter - 使用 as unknown as 進行類型轉換（SDK 類型複雜）
       adapter.start(eventStream as unknown as AsyncIterable<SDKEvent>, sessionId);
       
       logger.info(`[OpenCodeSDKAdapter] 已訂閱事件, sessionId: ${sessionId}`);
@@ -335,8 +335,15 @@ export class OpenCodeSDKAdapter {
         },
       });
       
-      logger.info(`[OpenCodeSDKAdapter] Session 創建成功: ${result.data?.id}`);
-      return result.data as Session;
+      // 檢查 SDK 返回的錯誤
+      if (result.error) {
+        throw this.mapSDKError(result.error, '創建 Session 失敗');
+      }
+      
+      // Cast to any first to access id, then return properly typed
+      const session = result.data as unknown as { id: string };
+      logger.info(`[OpenCodeSDKAdapter] Session 創建成功: ${session.id}`);
+      return session as Session;
     } catch (error) {
       throw this.mapSDKError(error, '創建 Session 失敗');
     }
@@ -436,6 +443,33 @@ export class OpenCodeSDKAdapter {
    * @returns SDKAdapterError
    */
   private mapSDKError(error: unknown, fallbackMessage: string): SDKAdapterError {
+    // 首先檢查 SDK 的結構化錯誤類型
+    if (error && typeof error === 'object') {
+      // 檢查 statusCode 屬性（SDK 的 ApiError）
+      if ('statusCode' in error || 'status' in error) {
+        const statusCode = (error as { statusCode?: number; status?: number }).statusCode 
+          || (error as { statusCode?: number; status?: number }).status;
+        
+        switch (statusCode) {
+          case 404:
+            return new SDKAdapterError(`${fallbackMessage}: 資源不存在`, 'NOT_FOUND');
+          case 401:
+          case 403:
+            return new SDKAdapterError(`${fallbackMessage}: 認證失敗`, 'UNAUTHORIZED');
+          case 429:
+            return new SDKAdapterError(`${fallbackMessage}: 請求過於頻繁`, 'RATE_LIMIT');
+          case 408:
+            return new SDKAdapterError(`${fallbackMessage}: 請求逾時`, 'TIMEOUT');
+          case 500:
+          case 502:
+          case 503:
+          case 504:
+            return new SDKAdapterError(`${fallbackMessage}: 伺服器錯誤`, 'CONNECTION_ERROR');
+        }
+      }
+    }
+    
+    // 回退到字串匹配用於非結構化錯誤
     if (error instanceof Error) {
       const errorMessage = error.message.toLowerCase();
       
