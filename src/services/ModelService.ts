@@ -1,13 +1,35 @@
 /**
  * Model Service
- * @description 從連接的 Provider 動態獲取模型列表的服務
+ * @description 從環境變數獲取模型列表的服務
  */
 
 import { LRUCache } from 'lru-cache';
 import { MODELS, DEFAULT_MODEL, getModelById, type ModelDefinition, type ModelProvider } from '../models/ModelData.js';
 import { log as logger } from '../utils/logger.js';
-import { ProviderService } from './ProviderService.js';
-import { createOpenCodeCloudClient, type OpenCodeProviderType } from './OpenCodeCloudClient.js';
+
+// 預設模型列表
+const DEFAULT_MODELS = MODELS;
+
+/**
+ * 從環境變數獲取 API Key
+ * @returns API Key 或 null
+ */
+function getApiKeyFromEnv(): string | null {
+  return process.env.OPENCODE_API_KEY || null;
+}
+
+/**
+ * 從環境變數獲取可用模型列表
+ * @returns 模型 ID 數組
+ */
+function getModelsFromEnv(): string[] {
+  const models = process.env.OPENCODE_MODELS;
+  if (models) {
+    return models.split(',').map(m => m.trim());
+  }
+  // 回傳預設模型列表
+  return DEFAULT_MODELS.map(m => m.id);
+}
 
 // 模型緩存（按 guildId 緩存）- 使用 LRUCache 自動管理過期和容量
 const modelCacheByGuild = new LRUCache<string, ModelDefinition[]>({
@@ -18,12 +40,46 @@ const modelCacheByGuild = new LRUCache<string, ModelDefinition[]>({
 });
 
 /**
+ * 生成精確的緩存鍵
+ * P2-14: 使用更精確的緩存鍵，包含環境配置哈希
+ * @param guildId - Guild ID
+ * @returns 緩存鍵
+ */
+function generateCacheKey(guildId?: string): string {
+  // 包含配置信息在緩存鍵中，確保不同配置使用不同緩存
+  const apiKey = getApiKeyFromEnv();
+  const envModelsStr = process.env.OPENCODE_MODELS || '';
+  const configHash = `${apiKey ? 'hasKey' : 'noKey'}:${envModelsStr}`;
+  
+  // 如果有 guildId，結合配置哈希
+  if (guildId) {
+    return `${guildId}:${configHash}`;
+  }
+  // 否則使用全局鍵
+  return `global:${configHash}`;
+}
+
+/**
+ * 檢查 Model Service 是否已配置
+ * @returns 是否已配置（API Key 或明確的模型列表）
+ */
+export function isModelServiceConfigured(): boolean {
+  const apiKey = getApiKeyFromEnv();
+  const envModelsStr = process.env.OPENCODE_MODELS;
+  const hasExplicitModels = !!envModelsStr;
+  return !!apiKey || hasExplicitModels;
+}
+
+/**
  * 清除模型列表緩存
+ * P2-14: 使用更精確的緩存鍵清除
  * @param guildId - Guild ID（可選，不提供則清除所有緩存）
  */
 export function clearModelCache(guildId?: string): void {
   if (guildId) {
-    modelCacheByGuild.delete(guildId);
+    // 清除特定 guildId 的緩存（包含所有配置變體）
+    // 由於我們無法預知所有配置變體，直接清除該前綴的所有鍵
+    modelCacheByGuild.clear();
   } else {
     modelCacheByGuild.clear();
   }
@@ -60,8 +116,17 @@ function convertToModelDefinition(modelId: string): ModelDefinition {
     'github-copilot': 'github-copilot',
   };
   
-  // 使用有效的提供商名稱，如果不在列表中則保留原始名稱
-  const mappedProvider = validProviders[provider] || provider as ModelProvider;
+  // P2-15: 使用類型守衛而不是類型斷言
+  // 檢查提供商是否為有效的 ModelProvider
+  function isValidModelProvider(p: string): p is ModelProvider {
+    return Object.values(validProviders).includes(p as ModelProvider) || 
+           validProviders.hasOwnProperty(p);
+  }
+  
+  // 使用類型守衛驗證提供商
+  const mappedProvider: ModelProvider = isValidModelProvider(provider) 
+    ? provider 
+    : 'opencode'; // 默認為 opencode 作為 fallback
   
   // 根據名稱推斷類別
   let category: 'fast' | 'balanced' | 'powerful' = 'balanced';
@@ -85,71 +150,15 @@ function convertToModelDefinition(modelId: string): ModelDefinition {
 }
 
 /**
- * 從 Provider 獲取模型列表
- * @param guildId - Guild ID
- * @param providerId - Provider ID
- * @param apiKey - API Key
- * @returns 模型 ID 數組
- */
-async function fetchModelsFromProvider(guildId: string, providerId: OpenCodeProviderType, apiKey: string): Promise<string[]> {
-  // 檢查是否是 OpenCode 提供商，如果是則使用儲存的模型
-  const isOpenCodeProvider = providerId === 'opencode-zen' || providerId === 'opencode-go';
-  
-  if (isOpenCodeProvider) {
-    // 嘗試從 ProviderService 獲取儲存的模型
-    try {
-      const providerService = ProviderService.getInstance();
-      const storedModels = await providerService.getStoredModels(guildId, providerId);
-      
-      if (storedModels && storedModels.length > 0) {
-        logger.info(`[ModelService] Using stored models for OpenCode provider ${providerId}`, {
-          guildId,
-          count: storedModels.length,
-        });
-        return storedModels;
-      }
-    } catch (error) {
-      logger.warn(`[ModelService] Failed to get stored models for ${providerId}, falling back to API`, {
-        guildId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  
-  // 對於非 OpenCode 提供商或獲取失敗的情況，嘗試從 API 獲取
-  try {
-    const client = createOpenCodeCloudClient(apiKey, providerId);
-    const models = await client.getModels();
-    
-    const formattedModels = models.map(id => {
-      // 如果已經包含 /，假設它已經有前綴了
-      if (id.includes('/')) return id;
-      
-      // 否則添加前綴
-      if (providerId === 'opencode-zen') return `opencode/${id}`;
-      if (providerId === 'opencode-go') return `opencode-go/${id}`;
-      return `${providerId}/${id}`;
-    });
-    
-    logger.info(`[ModelService] Fetched ${formattedModels.length} models from provider ${providerId}`);
-    return formattedModels;
-  } catch (error) {
-    logger.error(`[ModelService] Failed to fetch models from provider ${providerId}`, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return [];
-  }
-}
-
-/**
- * 獲取可用的模型列表（從 connected providers 獲取或使用 fallback）
+ * 獲取可用的模型列表（從環境變數獲取或使用 fallback）
  * @param guildId - Discord Guild ID
  * @param useCache - 是否使用緩存（默認 true）
  * @param allowFallback - 是否允許使用靜態 fallback（默認 false）
  * @returns 模型定義數組
  */
 export async function getAvailableModels(guildId?: string, useCache: boolean = true, allowFallback: boolean = false): Promise<ModelDefinition[]> {
-  const cacheKey = guildId || 'global';
+  // P2-14: 使用更精確的緩存鍵
+  const cacheKey = generateCacheKey(guildId);
   
   // 檢查緩存
   if (useCache) {
@@ -163,62 +172,34 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
     }
   }
 
-  // 如果提供了 guildId，嘗試從 connected providers 獲取模型
-  if (guildId) {
-    try {
-      const providerService = ProviderService.getInstance();
-      const providers = await providerService.getProviders(guildId);
-      
-      const allModels: ModelDefinition[] = [];
-      
-      // 遍歷所有 connected providers
-      for (const [providerId, connection] of Object.entries(providers)) {
-        if (connection.connected && connection.apiKey) {
-          // 解密 API Key
-          const apiKey = await providerService.getDecryptedApiKey(guildId, providerId);
-          if (apiKey) {
-            const modelIds = await fetchModelsFromProvider(guildId, providerId as OpenCodeProviderType, apiKey);
-            const models = modelIds.map(convertToModelDefinition);
-            allModels.push(...models);
-          }
-        }
-      }
-      
-      // 如果有從 providers 獲取的模型
-      if (allModels.length > 0) {
-        // 更新緩存
-        modelCacheByGuild.set(cacheKey, allModels);
-        
-        logger.info('[ModelService] Successfully fetched models from connected providers', { 
-          guildId,
-          count: allModels.length,
-        });
-        
-        return allModels;
-      }
-      
-      logger.info('[ModelService] No connected providers found', { guildId });
-      
-      // 如果沒有允許 fallback，拋出錯誤
-      if (!allowFallback) {
-        throw new Error('No connected providers found. Please configure providers using /connect command first.');
-      }
-    } catch (error) {
-      logger.error('[ModelService] Error fetching models from providers', {
-        error: error instanceof Error ? error.message : String(error),
-        guildId,
-      });
-      
-      // 如果沒有允許 fallback，拋出錯誤
-      if (!allowFallback) {
-        throw new Error('Failed to fetch models from providers. Please check your provider configuration.');
-      }
-    }
-  } else {
-    // 如果沒有提供 guildId 且不允許 fallback，拋出錯誤
-    if (!allowFallback) {
-      throw new Error('No guild ID provided and dynamic loading is not available. Please configure providers using /connect command first.');
-    }
+  // 檢查環境變數是否配置
+  const apiKey = getApiKeyFromEnv();
+  const envModelsStr = process.env.OPENCODE_MODELS;
+  const envModels = envModelsStr ? envModelsStr.split(',').map(m => m.trim()) : [];
+  
+  // P1-8: 使用 isModelServiceConfigured() 檢查是否已配置
+  const isConfigured = isModelServiceConfigured();
+  
+  // 如果有配置，轉換為模型定義
+  if (isConfigured) {
+    const modelsToUse = envModels.length > 0 ? envModels : DEFAULT_MODELS.map(m => m.id);
+    const modelDefs = modelsToUse.map(convertToModelDefinition);
+    
+    // 更新緩存
+    modelCacheByGuild.set(cacheKey, modelDefs);
+    
+    logger.info('[ModelService] Using models from environment configuration', { 
+      guildId,
+      count: modelDefs.length,
+      hasApiKey: !!apiKey,
+    });
+    
+    return modelDefs;
+  }
+  
+  // 如果沒有環境變數且不允許 fallback，拋出錯誤
+  if (!allowFallback) {
+    throw new Error('No API key configured. Please set OPENCODE_API_KEY in your .env file.');
   }
   
   // 只有在允許的情況下才使用靜態 fallback
@@ -236,44 +217,18 @@ export async function getAvailableModels(guildId?: string, useCache: boolean = t
     return fallbackModels;
   }
   
-  // 如果到達這裡，表示不允許 fallback 且無法動態獲取
-  throw new Error('No available models. Please configure providers using /connect command first.');
+  // 如果到達這裡，表示不允許 fallback 且無法獲取
+  throw new Error('No available models. Please set OPENCODE_API_KEY and OPENCODE_MODELS in your .env file.');
 }
 
 /**
- * 獲取動態模型列表（從 providers，不使用 fallback）
+ * 獲取動態模型列表（從環境變數）
  * @param guildId - Discord Guild ID
  * @returns 模型 ID 數組
  */
-export async function getDynamicModelList(guildId?: string): Promise<string[]> {
-  if (!guildId) {
-    return [];
-  }
-  
-  try {
-    const providerService = ProviderService.getInstance();
-    const providers = await providerService.getProviders(guildId);
-    
-    const allModels: string[] = [];
-    
-    for (const [providerId, connection] of Object.entries(providers)) {
-      if (connection.connected && connection.apiKey) {
-        const apiKey = await providerService.getDecryptedApiKey(guildId, providerId);
-        if (apiKey) {
-          const modelIds = await fetchModelsFromProvider(guildId, providerId as OpenCodeProviderType, apiKey);
-          allModels.push(...modelIds);
-        }
-      }
-    }
-    
-    return allModels;
-  } catch (error) {
-    logger.error('[ModelService] getDynamicModelList failed', { 
-      error: error instanceof Error ? error.message : String(error),
-      guildId,
-    });
-    return [];
-  }
+export async function getDynamicModelList(_guildId?: string): Promise<string[]> {
+  // 從環境變數獲取模型
+  return getModelsFromEnv();
 }
 
 /**
@@ -299,44 +254,30 @@ export async function getModelsByCategory(category: 'fast' | 'balanced' | 'power
 }
 
 /**
- * 獲取所有提供商列表（從 connected providers 動態獲取）
- * @param guildId - Discord Guild ID（必須提供）
+ * 獲取所有提供商列表（從環境變數配置）
+ * @param guildId - Discord Guild ID（可選）
  * @returns 排序後的提供商名稱數組
  * @throws Error 當無法獲取 providers 時
  */
-export async function getProviders(guildId?: string): Promise<string[]> {
-  // 必須提供 guildId
-  if (!guildId) {
-    throw new Error('No guild ID provided. Please use this command in a server context.');
+export async function getProviders(_guildId?: string): Promise<string[]> {
+  // P1-8: 使用 isModelServiceConfigured() 檢查是否已配置
+  if (!isModelServiceConfigured()) {
+    throw new Error('No API key configured. Please set OPENCODE_API_KEY in your .env file.');
   }
-
-  try {
-    const providerService = ProviderService.getInstance();
-    const providers = await providerService.getProviders(guildId);
-    
-    const connectedProviders = Object.entries(providers)
-      .filter(([, conn]) => conn.connected)
-      .map(([id]) => id);
-    
-    if (connectedProviders.length > 0) {
-      return connectedProviders.sort();
-    }
-    
-    // 沒有 connected providers - 報錯而不是 fallback
-    throw new Error('No connected providers found. Please configure providers using `/connect` command first.');
-    
-  } catch (error) {
-    // 如果已經是自定义错误，直接抛出
-    if (error instanceof Error && error.message.includes('No connected providers')) {
-      throw error;
-    }
-    
-    logger.error('[ModelService] Error fetching providers', {
-      error: error instanceof Error ? error.message : String(error),
-      guildId,
-    });
-    throw new Error(`Failed to fetch providers: ${error instanceof Error ? error.message : String(error)}. Please check your provider configuration using /connect command.`);
+  
+  // 從模型列表中提取提供商
+  const models = await getAvailableModels(_guildId);
+  const providersSet = new Set<string>();
+  
+  for (const model of models) {
+    providersSet.add(model.provider);
   }
+  
+  if (providersSet.size === 0) {
+    throw new Error('No providers available. Please configure OPENCODE_MODELS in your .env file.');
+  }
+  
+  return Array.from(providersSet).sort();
 }
 
 /**

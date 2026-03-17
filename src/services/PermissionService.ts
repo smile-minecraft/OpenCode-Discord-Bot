@@ -44,6 +44,7 @@ export interface ToolExecutionRequest {
   requestId: string;
   sessionId: string;
   channelId: string;
+  guildId: string;
   userId: string;
   username: string;
   toolName: string;
@@ -63,6 +64,7 @@ export type ApprovalAction = 'allow' | 'deny' | 'always_allow';
 export interface ToolApprovalRecord {
   id: string;
   sessionId: string;
+  guildId: string;
   toolName: string;
   pattern: string;
   action: ApprovalAction;
@@ -445,7 +447,7 @@ export class PermissionService {
    */
   async saveApprovalRecord(record: ToolApprovalRecord): Promise<void> {
     try {
-      const guild = await this.database.getGuild(record.sessionId);
+      const guild = await this.database.getGuild(record.guildId);
       
       if (guild) {
         // 儲存審批記錄到伺服器配置中

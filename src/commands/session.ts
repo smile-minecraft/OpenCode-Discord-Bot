@@ -163,6 +163,14 @@ export async function handleSessionCommand(
   interaction: ChatInputCommandInteraction,
   sessionManager: SessionManager
 ): Promise<void> {
+  if (!interaction.memberPermissions?.has('ManageChannels')) {
+    await interaction.reply({
+      content: '❌ 您需要「管理頻道」權限才能使用此指令',
+      ephemeral: true,
+    });
+    return;
+  }
+
   const subcommand = interaction.options.getSubcommand();
 
   switch (subcommand) {

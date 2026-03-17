@@ -107,6 +107,7 @@ export class ButtonHandler {
    * @param interaction Discord.js ButtonInteraction
    */
   public async handle(interaction: ButtonInteraction): Promise<void> {
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
     const customId = interaction.customId;
 
     try {

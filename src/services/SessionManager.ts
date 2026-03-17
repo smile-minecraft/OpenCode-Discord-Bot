@@ -13,9 +13,8 @@ import { Session, SessionStatus, SessionMetadata } from '../database/models/Sess
 import { v4 as uuidv4 } from 'uuid';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import logger from '../utils/logger.js';
-import { ProviderService } from './ProviderService.js';
-import { PROVIDERS, type OpenCodeProviderType } from './OpenCodeCloudClient.js';
-import { MODEL_CONFIG, OPENCODE_SERVER, FEATURE_FLAGS } from '../config/constants.js';
+import { MODEL_CONFIG, FEATURE_FLAGS } from '../config/constants.js';
+import { getOpenCodeServerManager, OpenCodeServerManager } from './OpenCodeServerManager.js';
 
 // 導入舊版和新版適配器
 import { OpenCodeClient as LegacyOpenCodeClient, getOpenCodeClient as getLegacyOpenCodeClient } from './deprecated/OpenCodeClient.js';
@@ -57,154 +56,71 @@ export interface SessionExecutionResult {
 
 // ============== Session 管理器 ==============
 
-/**
- * Session 管理器類
- * @description 負責管理 OpenCode Session 的生命週期，使用本地 OpenCode 伺服器
- */
-export class SessionManager {
-  /** 活躍的 Session 映射 */
-  private activeSessions: Map<string, Session> = new Map();
-  /** 頻道 ID 到 Session ID 集合的映射（用於快速查詢） */
-  private channelSessions: Map<string, Set<string>> = new Map();
-  /** Provider Service 實例 */
-  private providerService: ProviderService;
-  /** SQLite 資料庫實例 */
-  private sqliteDb: SQLiteDatabase;
-  
-  // 根據 Feature Flag 選擇適配器
-  /** 舊版 OpenCode Client（當 USE_SDK_ADAPTER=false 時使用） */
-  private legacyClient!: LegacyOpenCodeClient;
-  /** 新版 SDK Adapter（當 USE_SDK_ADAPTER=true 時使用） */
-  private sdkAdapter!: OpenCodeSDKAdapter;
-  /** 當前是否使用 SDK Adapter */
-  private readonly useSDKAdapter: boolean;
-  /** 預設模型 */
-  private readonly defaultModel = MODEL_CONFIG.DEFAULT;
-  /** 預設 Agent */
-  private readonly defaultAgent = 'general';
-  /** 預設端口範圍開始 */
-  private readonly portRangeStart = OPENCODE_SERVER.PORT_RANGE_START;
-  /** 預設端口範圍結束 */
-  private readonly portRangeEnd = OPENCODE_SERVER.PORT_RANGE_END;
-  /** 當前分配的端口 */
-  private allocatedPorts: Set<number> = new Set();
-  /** 頻道 ID 到端口的映射 */
-  private channelPortMap: Map<string, number> = new Map();
-  /** 端口分配鎖（用於防止 Race Condition） */
-  private portAllocationLock: Map<string, Promise<number>> = new Map();
-
   /**
-   * 創建 Session 管理器實例
+   * Session 管理器類
+   * @description 負責管理 OpenCode Session 的生命週期，使用本地 OpenCode 伺服器
    */
-  constructor() {
-    this.providerService = ProviderService.getInstance();
-    this.sqliteDb = SQLiteDatabase.getInstance();
+  export class SessionManager {
+    /** 活躍的 Session 映射 */
+    private activeSessions: Map<string, Session> = new Map();
+    /** 頻道 ID 到 Session ID 集合的映射（用於快速查詢） */
+    private channelSessions: Map<string, Set<string>> = new Map();
+    /** SQLite 資料庫實例 */
+    private sqliteDb: SQLiteDatabase;
+    /** 清理定時器 */
+    private cleanupInterval: NodeJS.Timeout | null = null;
     
     // 根據 Feature Flag 選擇適配器
-    this.useSDKAdapter = FEATURE_FLAGS.USE_SDK_ADAPTER;
-    
-    if (this.useSDKAdapter) {
-      this.sdkAdapter = getOpenCodeSDKAdapter();
-      logger.info('[SessionManager] 使用 SDK Adapter (USE_SDK_ADAPTER=true)');
-    } else {
-      this.legacyClient = getLegacyOpenCodeClient();
-      logger.info('[SessionManager] 使用舊版 Client (USE_SDK_ADAPTER=false)');
-    }
+    /** 舊版 OpenCode Client（當 USE_SDK_ADAPTER=false 時使用） */
+    private legacyClient!: LegacyOpenCodeClient;
+    /** 新版 SDK Adapter（當 USE_SDK_ADAPTER=true 時使用） */
+    private sdkAdapter!: OpenCodeSDKAdapter;
+    /** 當前是否使用 SDK Adapter */
+    private readonly useSDKAdapter: boolean;
+    /** 預設模型 */
+    private readonly defaultModel = MODEL_CONFIG.DEFAULT;
+    /** 預設 Agent */
+    private readonly defaultAgent = 'general';
+    /** OpenCode 伺服器管理器 */
+    private readonly serverManager: OpenCodeServerManager;
 
-    // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
-    // 這裡只檢查狀態，不負責初始化
-    if (!this.sqliteDb.isReady()) {
-      logger.warn('[SessionManager] SQLite 資料庫尚未初始化，某些功能可能無法正常工作');
-    }
-  }
-
-  /**
-   * 分配可用端口
-   * @param channelId - Discord 頻道 ID
-   * @returns 分配的端口號
-   */
-  async allocatePort(channelId: string): Promise<number> {
-    // 檢查是否已經為此頻道分配了端口
-    const existingPort = this.channelPortMap.get(channelId);
-    if (existingPort && !this.allocatedPorts.has(existingPort)) {
-      // 端口可能被釋放了，重新分配
-      this.channelPortMap.delete(channelId);
-    } else if (existingPort) {
-      logger.debug(`[SessionManager] 重用現有端口: ${existingPort} for channel: ${channelId}`);
-      return existingPort;
-    }
-
-    // 使用全域鎖防止 Race Condition - 確保所有頻道的端口分配串行化
-    const lockKey = 'global:portAllocation';
-    const existingLock = this.portAllocationLock.get(lockKey);
-    if (existingLock) {
-      logger.debug(`[SessionManager] 等待現有端口分配完成 for channel: ${channelId}`);
-      return existingLock.then(() => {
-        // 等待完成後，重新檢查是否有可用的端口
-        return this.allocatePort(channelId);
-      });
-    }
-
-    // 創建分配Promise並設置全域鎖
-    const allocationPromise = this.doAllocatePort(channelId);
-    this.portAllocationLock.set(lockKey, allocationPromise);
-
-    try {
-      const port = await allocationPromise;
-      return port;
-    } finally {
-      this.portAllocationLock.delete(lockKey);
-    }
-  }
-
-  /**
-   * 執行實際的端口分配
-   * @param channelId - Discord 頻道 ID
-   * @returns 分配的端口號
-   */
-  private async doAllocatePort(channelId: string): Promise<number> {
-    // 查找可用端口
-    for (let port = this.portRangeStart; port <= this.portRangeEnd; port++) {
-      if (!this.allocatedPorts.has(port)) {
-        // 檢查端口是否已被佔用
-        try {
-          const isRunning = await this.checkServerRunning(port);
-          if (isRunning) {
-            continue; // 端口已被佔用
-          }
-        } catch {
-          // 如果檢查失敗，假設端口可用
-        }
-
-        this.allocatedPorts.add(port);
-        this.channelPortMap.set(channelId, port);
-        logger.debug(`[SessionManager] 分配端口: ${port} for channel: ${channelId}`);
-        return port;
+    /**
+     * 創建 Session 管理器實例
+     */
+    constructor() {
+      this.sqliteDb = SQLiteDatabase.getInstance();
+      this.serverManager = getOpenCodeServerManager();
+      
+      // 根據 Feature Flag 選擇適配器
+      this.useSDKAdapter = FEATURE_FLAGS.USE_SDK_ADAPTER;
+      
+      if (this.useSDKAdapter) {
+        this.sdkAdapter = getOpenCodeSDKAdapter();
+        logger.info('[SessionManager] 使用 SDK Adapter (USE_SDK_ADAPTER=true)');
+      } else {
+        this.legacyClient = getLegacyOpenCodeClient();
+        logger.info('[SessionManager] 使用舊版 Client (USE_SDK_ADAPTER=false)');
       }
+
+      // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
+      // 這裡只檢查狀態，不負責初始化
+      if (!this.sqliteDb.isReady()) {
+        logger.warn('[SessionManager] SQLite 資料庫尚未初始化，某些功能可能無法正常工作');
+      }
+
+      // P1-6: 啟動定時清理機制，每 5 分鐘清理一次已結束的 Session
+      this.cleanupInterval = setInterval(() => this.cleanupEndedSessions(), 5 * 60 * 1000);
+      // 防止定時器阻止程序退出
+      this.cleanupInterval.unref();
+      logger.debug('[SessionManager] Session 清理定時器已啟動 (5 分鐘間隔)');
     }
-    throw new Error('沒有可用的埠號');
-  }
 
   /**
-   * 釋放端口
-   * @param port - 要釋放的端口號
-   * @param channelId - 可選的頻道 ID，用於清除映射
+   * 獲取伺服器端口
+   * @returns 伺服器端口號
    */
-  private releasePort(port: number, channelId?: string): void {
-    this.allocatedPorts.delete(port);
-    // 如果提供了 channelId，則清除映射
-    if (channelId) {
-      this.channelPortMap.delete(channelId);
-    } else {
-      // 否則遍歷找到對應的 channelId
-      for (const [ch, p] of this.channelPortMap.entries()) {
-        if (p === port) {
-          this.channelPortMap.delete(ch);
-          break;
-        }
-      }
-    }
-    logger.debug(`[SessionManager] 釋放端口: ${port}`);
+  private getPort(): number {
+    return this.serverManager.getPort();
   }
 
   /**
@@ -212,7 +128,6 @@ export class SessionManager {
    */
   async createSession(options: CreateSessionOptions): Promise<Session> {
     const sessionId = this.generateSessionId();
-    const guildId = options.guildId;
 
     // 創建 Session 實例
     const session = new Session({
@@ -237,32 +152,22 @@ export class SessionManager {
     channelSessionSet.add(sessionId);
     this.channelSessions.set(options.channelId, channelSessionSet);
 
-    let port: number | undefined;
+    const port = this.getPort();
 
     try {
-      // 1. 分配端口
-      port = await this.allocatePort(options.channelId);
-
-      // 2. 啟動 OpenCode 伺服器
-      await this.doStartServer(session.projectPath, port);
-      logger.info(`[SessionManager] OpenCode 伺服器已啟動於端口 ${port}`);
-
-      // 3. 檢查並獲取 Provider API Key（如有）
-      const model = options.model || this.defaultModel;
-      const providerInfo = await this.findProviderForModel(guildId, model);
-
-      // 4. 如果有 Provider API Key，設定認證
-      if (providerInfo) {
+      // 1. 確保 OpenCode 伺服器正在運行
+      if (!this.serverManager.getIsRunning()) {
         try {
-          await this.doSetProviderAuth(port, providerInfo.providerId, providerInfo.apiKey);
-          logger.info(`[SessionManager] 已設定 Provider 認證: ${providerInfo.providerId}`);
+          await this.serverManager.start(session.projectPath);
+          logger.info(`[SessionManager] OpenCode 伺服器已啟動於端口 ${port}`);
         } catch (error) {
-          logger.warn(`[SessionManager] 設定 Provider 認證失敗:`, error);
-          // 繼續執行，認證失敗不影響 Session 創建
+          logger.error('[SessionManager] 伺服器啟動失敗', { error });
+          session.fail('無法啟動 OpenCode 伺服器，請檢查配置');
+          throw error;
         }
       }
 
-      // 5. 創建 Session
+      // 2. 創建 Session
       const openCodeSessionInfo = await this.doCreateSession(port, {
         model: session.model,
         agent: session.agent,
@@ -270,29 +175,18 @@ export class SessionManager {
         initialPrompt: session.prompt,
       });
 
-      // 6. 更新 Session 資訊
+      // 3. 更新 Session 資訊
       session.opencodeSessionId = openCodeSessionInfo.id;
       (session.metadata as SessionMetadata & { opencodeSessionId?: string }).opencodeSessionId = openCodeSessionInfo.id;
-      (session.metadata as SessionMetadata & { providerId?: string }).providerId = providerInfo?.providerId;
       (session.metadata as SessionMetadata & { port?: number }).port = port;
       session.markRunning();
 
-      // 7. 保存到資料庫
+      // 4. 保存到資料庫
       await this.saveSession(session);
 
       logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSessionInfo.id}, Port: ${port}`);
     } catch (error) {
       logger.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
-      
-      // 清理：停止伺服器並釋放端口
-      if (port) {
-        try {
-          await this.doStopServer(port);
-        } catch {
-          // 忽略停止錯誤
-        }
-        this.releasePort(port, options.channelId);
-      }
       
       session.fail(error instanceof Error ? error.message : '未知錯誤');
     }
@@ -329,26 +223,10 @@ export class SessionManager {
     }
 
     // 恢復 Session
-    const port = (session.metadata as SessionMetadata & { port?: number })?.port;
-    
-    if (!port) {
-      throw new Error(`Session ${sessionId} 缺少端口資訊，無法恢復`);
-    }
-
     try {
       // 檢查伺服器是否仍在運行
-      if (!(await this.checkServerRunning(port))) {
-        // 嘗試重新啟動伺服器
-        await this.doStartServer(session.projectPath, port);
-        
-        // 重新設定 Provider 認證（如有）
-        const providerId = (session.metadata as SessionMetadata & { providerId?: string })?.providerId;
-        if (providerId) {
-          const apiKey = await this.providerService.getDecryptedApiKey(session.channelId, providerId);
-          if (apiKey) {
-            await this.doSetProviderAuth(port, providerId, apiKey);
-          }
-        }
+      if (!this.serverManager.getIsRunning()) {
+        await this.serverManager.start(session.projectPath);
       }
 
       session.resume();
@@ -380,18 +258,9 @@ export class SessionManager {
       return null;
     }
 
-    // 嘗試停止 OpenCode 伺服器
-    const port = (session.metadata as SessionMetadata & { port?: number })?.port;
-    
-    if (port) {
-      try {
-        await this.doStopServer(port);
-        this.releasePort(port, session.channelId);
-        logger.info(`[SessionManager] OpenCode 伺服器已停止於端口 ${port}`);
-      } catch (error) {
-        logger.warn(`[SessionManager] 停止 OpenCode 伺服器失敗:`, error);
-      }
-    }
+    // 注意：在單一伺服器架構下，我們不會停止伺服器
+    // 因為其他 Session 可能仍在使用
+    // 伺服器會在應用關閉時統一停止
 
     // 更新 Session 狀態
     session.abort();
@@ -530,98 +399,7 @@ export class SessionManager {
     return path.join(projectsRoot, channelId);
   }
 
-  /**
-   * 查找適合模型的 Provider
-   * @param guildId - Guild ID
-   * @param model - 模型 ID
-   * @returns Provider ID 和 API Key
-   */
-  private async findProviderForModel(guildId: string, model: string): Promise<{ providerId: string; apiKey: string } | null> {
-    const providers = await this.providerService.getProviders(guildId);
-    
-    // 遍歷所有 connected providers
-    for (const [providerId, connection] of Object.entries(providers)) {
-      if (connection.connected && connection.apiKey) {
-        // 解密 API Key
-        const apiKey = await this.providerService.getDecryptedApiKey(guildId, providerId);
-        if (apiKey) {
-          // 檢查這個 provider 是否支持這個模型
-          // 簡單檢查：模型 ID 以 provider 的 modelPrefix 開頭
-          const providerDef = await this.getProviderDefinition(providerId as OpenCodeProviderType);
-          if (providerDef && model.startsWith(providerDef.modelPrefix.replace('/', ''))) {
-            return { providerId, apiKey };
-          }
-          
-          // 或者檢查 provider 是否在模型 ID 中
-          // 例如: opencode-go/kimi-k2.5 包含 opencode-go
-          if (model.includes(providerId)) {
-            return { providerId, apiKey };
-          }
-        }
-      }
-    }
-    
-    // 如果沒有找到特定的 provider，返回第一個可用的 connected provider
-    for (const [providerId, connection] of Object.entries(providers)) {
-      if (connection.connected && connection.apiKey) {
-        const apiKey = await this.providerService.getDecryptedApiKey(guildId, providerId);
-        if (apiKey) {
-          logger.info(`[SessionManager] Using provider ${providerId} as fallback for model ${model}`);
-          return { providerId, apiKey };
-        }
-      }
-    }
-    
-    return null;
-  }
-
-  /**
-   * 獲取 Provider 定義
-   */
-  private async getProviderDefinition(providerId: OpenCodeProviderType): Promise<{ modelPrefix: string } | null> {
-    return PROVIDERS[providerId] || null;
-  }
-
   // ============== SDK Adapter 橋接方法 ==============
-
-  /**
-   * 檢查伺服器是否運行
-   * @param port 端口號
-   * @returns 是否運行中
-   */
-  private async checkServerRunning(port: number): Promise<boolean> {
-    if (this.useSDKAdapter) {
-      return this.sdkAdapter.checkHealth(port);
-    } else {
-      return this.legacyClient.isServerRunning(port);
-    }
-  }
-
-  /**
-   * 啟動 OpenCode 伺服器（內部方法）
-   * @param projectPath 專案路徑
-   * @param port 端口號
-   */
-  private async doStartServer(projectPath: string, port: number): Promise<void> {
-    if (this.useSDKAdapter) {
-      await this.sdkAdapter.initialize({ projectPath, port });
-    } else {
-      await this.legacyClient.startServer(projectPath, port);
-    }
-  }
-
-  /**
-   * 停止 OpenCode 伺服器（內部方法）
-   * @param port 端口號
-   */
-  private async doStopServer(port: number): Promise<void> {
-    if (this.useSDKAdapter) {
-      // SDK adapter cleanup is handled differently - it cleans up its own process
-      await this.sdkAdapter.cleanup();
-    } else {
-      await this.legacyClient.stopServer(port);
-    }
-  }
 
   /**
    * 創建 Session（內部方法）
@@ -663,23 +441,6 @@ export class SessionManager {
       });
     } else {
       await this.legacyClient.sendPrompt(port, sessionId, prompt);
-    }
-  }
-
-  /**
-   * 設定 Provider 認證（內部方法）
-   * @param port 端口號
-   * @param providerId Provider ID
-   * @param apiKey API Key
-   */
-  private async doSetProviderAuth(port: number, providerId: string, apiKey: string): Promise<void> {
-    if (this.useSDKAdapter) {
-      await this.sdkAdapter.setProviderAuth({
-        providerId,
-        apiKey,
-      });
-    } else {
-      await this.legacyClient.setProviderAuth(port, providerId, apiKey);
     }
   }
 

@@ -18,10 +18,10 @@ export const DEFAULTS = {
    * OpenCode 伺服器預設配置
    */
   OPENCODE_SERVER: {
-    /** 動態端口範圍起始值 */
-    PORT_RANGE_START: 3000,
-    /** 動態端口範圍結束值 */
-    PORT_RANGE_END: 3100,
+    /** 伺服器端口 */
+    PORT: 3000,
+    /** 伺服器 URL */
+    URL: 'http://127.0.0.1:3000',
   },
 
   /**

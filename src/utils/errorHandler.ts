@@ -253,7 +253,8 @@ export function handleUncaughtException(): void {
       stack: error.stack
     });
     // 優雅退出
-    process.exit(1);
+    process.kill(process.pid, 'SIGTERM');
+    setTimeout(() => process.exit(1), 10000); // 10秒後強制退出
   });
 }
 

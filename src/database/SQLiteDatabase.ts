@@ -332,7 +332,13 @@ export class SQLiteDatabase {
   // ==================== Migration 系統 ====================
 
   /**
+   * 當前資料庫版本
+   */
+  private static readonly CURRENT_SCHEMA_VERSION = 1;
+
+  /**
    * 執行資料庫遷移
+   * P2-7: 增強的版本管理/遷移機制
    */
   private async runMigrations(): Promise<void> {
     if (!this.db) throw new Error('資料庫未初始化');
@@ -341,6 +347,7 @@ export class SQLiteDatabase {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS schema_version (
         version INTEGER PRIMARY KEY,
+        description TEXT,
         applied_at INTEGER NOT NULL
       )
     `);
@@ -349,25 +356,60 @@ export class SQLiteDatabase {
     const result = this.db.prepare('SELECT MAX(version) as version FROM schema_version').get() as { version: number | null };
     const currentVersion = result?.version || 0;
 
-    // 記錄當前版本（假設 schema.sql 是 v1）
-    if (currentVersion < 1) {
+    logger.info(`[SQLiteDatabase] 當前資料庫版本: ${currentVersion}, 目標版本: ${SQLiteDatabase.CURRENT_SCHEMA_VERSION}`);
+
+    // 如果沒有版本記錄，初始化為 v1（假設 schema.sql 是 v1）
+    if (currentVersion === 0) {
       this.db.prepare(`
-        INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)
-      `).run(1, Date.now());
-      logger.info('[SQLiteDatabase] Migration v1 已執行');
+        INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)
+      `).run(1, 'Initial schema', Date.now());
+      logger.info('[SQLiteDatabase] Migration v1 已執行（初始 schema）');
     }
+
+    // 這裡可以添加未來的遷移邏輯
+    // 例如：
+    // if (currentVersion < 2) {
+    //   await this.migrateToVersion(2);
+    // }
+  }
+
+  /**
+   * 遷移到指定版本（預留給未來使用）
+   */
+  // @ts-ignore - 預留給未來使用
+  private async migrateToVersion(version: number): Promise<void> {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    logger.info(`[SQLiteDatabase] 執行遷移至 v${version}...`);
+
+    // 根據版本執行對應的遷移
+    switch (version) {
+      case 2:
+        // await this.migrateToV2();
+        break;
+      // 未來添加更多遷移...
+      default:
+        logger.warn(`[SQLiteDatabase] 未知的遷移版本: ${version}`);
+    }
+
+    // 記錄遷移完成
+    this.db.prepare(`
+      INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)
+    `).run(version, `Migration to v${version}`, Date.now());
+
+    logger.info(`[SQLiteDatabase] Migration v${version} 已完成`);
   }
 
   // ==================== 索引創建 ====================
 
   /**
    * 創建效能優化索引
-   * @description 為經常查詢的欄位創建索引，提升查詢效能
+   * P2-6: 為經常查詢的欄位創建索引，提升查詢效能
    */
   private createIndexes(): void {
     if (!this.db) throw new Error('資料庫未初始化');
 
-    // sessions 表的索引
+    // sessions 表的索引 - P2-6: 確保頻道和狀態欄位有索引
     const sessionsIndexes = [
       // channel_id 索引 - 用於查詢頻道的所有 sessions
       `CREATE INDEX IF NOT EXISTS idx_sessions_channel_id ON sessions(channel_id)`,
@@ -377,6 +419,10 @@ export class SQLiteDatabase {
       `CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at DESC)`,
       // channel_id + status 複合索引 - 用於查詢頻道的活躍 sessions
       `CREATE INDEX IF NOT EXISTS idx_sessions_channel_active ON sessions(channel_id, status) WHERE status IN ('running', 'starting', 'waiting')`,
+      // user_id 索引 - 用於查詢用戶的所有 sessions
+      `CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`,
+      // project_path 索引 - 用於查詢專案的所有 sessions
+      `CREATE INDEX IF NOT EXISTS idx_sessions_project_path ON sessions(project_path)`,
     ];
 
     // messages 表的索引
@@ -424,10 +470,39 @@ export class SQLiteDatabase {
   // ==================== Session 操作 ====================
 
   /**
+   * 驗證 Session 資料的有效性
+   * @param session 要驗證的 Session
+   * @throws 如果驗證失敗則拋出錯誤
+   */
+  private validateSession(session: Session): void {
+    if (!session.sessionId) {
+      throw new Error('Session ID 不能為空');
+    }
+    if (!session.channelId) {
+      throw new Error('Channel ID 不能為空');
+    }
+    if (!session.userId) {
+      throw new Error('User ID 不能為空');
+    }
+    if (!session.projectPath) {
+      throw new Error('Project Path 不能為空');
+    }
+    if (!session.model) {
+      throw new Error('Model 不能為空');
+    }
+    if (!session.agent) {
+      throw new Error('Agent 不能為空');
+    }
+  }
+
+  /**
    * 儲存 Session
    */
   saveSession(session: Session): void {
     if (!this.db) throw new Error('資料庫未初始化');
+
+    // P2-5: 驗證 Session 資料的有效性
+    this.validateSession(session);
 
     // 從 metadata 中提取 userId，如果沒有則使用空字串
     const userId = (session.metadata as Record<string, unknown>)?.userId as string | undefined || '';
@@ -539,14 +614,22 @@ export class SQLiteDatabase {
 
   /**
    * 將資料庫記錄轉換為 Session 物件
+   * P2-8: 統一 null 處理，確保與 saveSession 一致
    */
   private rowToSession(row: SessionRow): Session {
     // 解析 metadata 並提取 userId
     const metadata = JSON.parse(row.metadata || '{}');
+    
+    // P2-8: 統一 null 處理 - 確保空字串和 null 一致處理
+    const userId = row.user_id || '';
+    const threadId = row.thread_id || null;
+    const opencodeSessionId = row.opencode_session_id || '';
+    const errorMessage = row.error_message || null;
+
     const sessionData: Partial<SessionData> & { sessionId: string; channelId: string; userId?: string } = {
       sessionId: row.id,
       channelId: row.channel_id,
-      userId: row.user_id,
+      userId: userId,
       prompt: row.prompt,
       model: row.model,
       agent: row.agent,
@@ -556,13 +639,14 @@ export class SQLiteDatabase {
 
     const session = new Session(sessionData as SessionData);
 
-    session.threadId = row.thread_id;
-    session.opencodeSessionId = row.opencode_session_id || '';
+    // P2-8: 統一 null 處理 - 與 saveSession 保持一致
+    session.threadId = threadId;
+    session.opencodeSessionId = opencodeSessionId;
     session.status = row.status as SessionStatus;
     session.tokensUsed = row.tokens_used;
     session.messageCount = row.message_count;
     session.toolCallCount = row.tool_call_count;
-    session.errorMessage = row.error_message;
+    session.errorMessage = errorMessage;
     
     // 確保 metadata 包含 userId
     if (row.user_id && metadata) {
@@ -586,30 +670,36 @@ export class SQLiteDatabase {
   saveMessage(sessionId: string, role: string, content: string, toolCalls?: unknown[]): void {
     if (!this.db) throw new Error('資料庫未初始化');
 
-    // 使用事務確保消息插入和計數更新的原子性
-    const transaction = this.db.transaction(() => {
-      // 插入消息
-      const stmt = this.db!.prepare(`
-        INSERT INTO messages (session_id, role, content, tool_calls, timestamp)
-        VALUES (?, ?, ?, ?, ?)
-      `);
+    // P1-5: 使用 try-catch 包圍 transaction 確保錯誤處理
+    try {
+      // 使用事務確保消息插入和計數更新的原子性
+      const transaction = this.db.transaction(() => {
+        // 插入消息
+        const stmt = this.db!.prepare(`
+          INSERT INTO messages (session_id, role, content, tool_calls, timestamp)
+          VALUES (?, ?, ?, ?, ?)
+        `);
 
-      stmt.run(
-        sessionId,
-        role,
-        content,
-        toolCalls ? JSON.stringify(toolCalls) : null,
-        Date.now()
-      );
+        stmt.run(
+          sessionId,
+          role,
+          content,
+          toolCalls ? JSON.stringify(toolCalls) : null,
+          Date.now()
+        );
 
-      // 更新 session 的訊息計數
-      this.db!.prepare(`
-        UPDATE sessions SET message_count = message_count + 1, updated_at = ?
-        WHERE id = ?
-      `).run(Date.now(), sessionId);
-    });
+        // 更新 session 的訊息計數
+        this.db!.prepare(`
+          UPDATE sessions SET message_count = message_count + 1, updated_at = ?
+          WHERE id = ?
+        `).run(Date.now(), sessionId);
+      });
 
-    transaction();
+      transaction();
+    } catch (error) {
+      logger.error('[SQLiteDatabase] saveMessage 事務執行失敗:', error);
+      throw error;
+    }
   }
 
   /**

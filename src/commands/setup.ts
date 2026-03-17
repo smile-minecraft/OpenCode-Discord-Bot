@@ -53,7 +53,7 @@ const command = new SlashCommandBuilder()
       .addStringOption((option) =>
         option
           .setName('model_id')
-          .setDescription('選擇預設模型（請先使用 /connect 連接 API 提供商）')
+          .setDescription('選擇預設模型（請先設定環境變數 OPENAI_API_KEY 或 ANTHROPIC_API_KEY）')
           .setRequired(true)
           .setAutocomplete(true)
       )
@@ -69,6 +69,14 @@ interface SetupConfig {
 // ============== 執行函數 ==============
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!interaction.memberPermissions?.has('ManageGuild')) {
+    await interaction.reply({
+      content: '❌ 您需要「管理伺服器」權限才能使用此指令',
+      ephemeral: true,
+    });
+    return;
+  }
+
   const subcommand = interaction.options.getSubcommand();
 
   switch (subcommand) {
@@ -358,10 +366,10 @@ async function handleModel(interaction: ChatInputCommandInteraction): Promise<vo
         new EmbedBuilder()
           .setColor(Colors.ERROR)
           .setTitle('❌ 無法設定模型')
-          .setDescription('目前沒有已連接的 AI 提供商。請先使用 `/connect` 指令連接您的 API 提供商，然後再使用此指令。')
+          .setDescription('目前沒有可用的 API Key。請設定環境變數 OPENAI_API_KEY、ANTHROPIC_API_KEY 或 GOOGLE_API_KEY。')
           .addFields({
             name: '📝 說明',
-            value: '使用 `/connect` 指令可以連接您的 OpenAI、Anthropic、Google 等 API 提供商。',
+            value: '請在伺服器的環境變數中設定 API Key。',
             inline: false,
           }),
       ],
@@ -509,7 +517,7 @@ async function handleAutocomplete(interaction: AutocompleteInteraction): Promise
     // 如果沒有 providers 連接，返回提示選項
     logger.error('[Setup] Autocomplete error', { error: error instanceof Error ? error.message : String(error) });
     await interaction.respond([
-      { name: '⚠️ 請先使用 /connect 連接 API 提供商', value: '' }
+      { name: '⚠️ 請先設定環境變數 OPENAI_API_KEY 等', value: '' }
     ]);
   }
 }

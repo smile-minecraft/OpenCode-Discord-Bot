@@ -1,13 +1,15 @@
 /**
  * Process Manager - OpenCode 伺服器進程管理
  * @description 管理 OpenCode HTTP 伺服器的生命週期，包括啟動、停止和垃圾回收
+ * 
+ * P2-13: 簡化設計 - 採用單一伺服器架構（固定端口 3000）
  */
 
 import { spawn, ChildProcess } from 'child_process';
 import logger from '../utils/logger.js';
-import { OPENCODE_SERVER, TIMEOUTS } from '../config/constants.js';
+import { TIMEOUTS } from '../config/constants.js';
 
-// ============== 常量 ==============
+// ============== 常量 =============
 
 /** 垃圾回收間隔（毫秒） */
 const GARBAGE_COLLECTION_INTERVAL = 30000; // 30秒
@@ -19,39 +21,36 @@ const STOP_SERVER_TIMEOUT = 5000;
 const HEALTH_CHECK_MAX_RETRIES = 5;
 /** 預設主機地址 */
 const DEFAULT_HOST = '127.0.0.1';
+/** 固定端口 - 單一伺服器架構 */
+const DEFAULT_PORT = 3000;
 
-// ============== ProcessManager 類別 =============
+// ============== ProcessManager 類別 ========
 
 /**
  * OpenCode 伺服器進程管理器
  * @description 單例服務，負責管理 OpenCode HTTP 伺服器進程的生命週期
+ * P2-13: 簡化設計 - 移除多餘的 Map 和端口分配邏輯
  */
 export class ProcessManager {
-  /** 運行的伺服器程序映射 */
-  private serverProcesses: Map<number, ChildProcess> = new Map();
+  /** 當前伺服器進程（單一伺服器架構，無需 Map） */
+  private serverProcess: ChildProcess | null = null;
+  /** 伺服器當前端口 */
+  private currentPort: number | null = null;
   /** 垃圾回收定時器 */
   private gcInterval: NodeJS.Timeout | null = null;
-  /** 當前使用的端口 */
-  private currentPort: number = OPENCODE_SERVER.PORT_RANGE_START;
-  /** 端口範圍 */
-  private readonly portRangeStart: number;
-  private readonly portRangeEnd: number;
 
   /**
    * 創建 ProcessManager 實例
    */
   constructor() {
-    this.portRangeStart = OPENCODE_SERVER.PORT_RANGE_START;
-    this.portRangeEnd = OPENCODE_SERVER.PORT_RANGE_END;
-    
     // 啟動垃圾回收機制
     this.startGarbageCollection();
-    logger.info('[ProcessManager] 初始化完成');
+    logger.info('[ProcessManager] 初始化完成 (單一伺服器模式)');
   }
 
   /**
    * 啟動垃圾回收機制
-   * @description 定時檢查並清理已終止但未從 Map 中移除的進程
+   * @description 定時檢查並清理已終止但未移除的進程
    */
   private startGarbageCollection(): void {
     if (this.gcInterval) {
@@ -80,73 +79,38 @@ export class ProcessManager {
 
   /**
    * 清理已終止的陳舊進程
-   * @description 檢查每個記錄的進程是否仍在運行，若已終止則從 Map 中移除
+   * @description 檢查當前記錄的進程是否仍在運行
    */
   public cleanupStaleProcesses(): void {
-    const ports = Array.from(this.serverProcesses.keys());
-    let cleanedCount = 0;
-    
-    for (const port of ports) {
-      const process = this.serverProcesses.get(port);
-      if (!process) {
-        this.serverProcesses.delete(port);
-        cleanedCount++;
-        continue;
-      }
-      
-      // 檢查進程是否已終止 (pid 為 undefined 或 kill 失敗表示已終止)
-      if (process.pid === undefined || process.killed) {
-        logger.warn(`[ProcessManager:${port}] 清理陳舊進程記錄 (PID: ${process.pid})`);
-        this.serverProcesses.delete(port);
-        cleanedCount++;
-        continue;
-      }
-      
-      // 嘗試 kill(0) 檢查進程是否存在（信號 0 不會殺死進程，只檢查是否存在）
-      try {
-        process.kill(0);
-      } catch {
-        // 進程已終止但 Map 中仍有記錄
-        logger.warn(`[ProcessManager:${port}] 清理已崩潰的進程記錄 (PID: ${process.pid})`);
-        this.serverProcesses.delete(port);
-        cleanedCount++;
-      }
+    if (!this.serverProcess) {
+      return;
     }
     
-    if (cleanedCount > 0) {
-      logger.debug(`[ProcessManager] 垃圾回收完成，清理了 ${cleanedCount} 個陳舊進程記錄`);
+    // 檢查進程是否已終止
+    if (this.serverProcess.pid === undefined || this.serverProcess.killed) {
+      logger.warn(`[ProcessManager:${this.currentPort}] 清理陳舊進程記錄 (PID: ${this.serverProcess.pid})`);
+      this.serverProcess = null;
+      this.currentPort = null;
+      return;
+    }
+    
+    // 嘗試 kill(0) 檢查進程是否存在（信號 0 不會殺死進程，只檢查是否存在）
+    try {
+      this.serverProcess.kill(0);
+    } catch {
+      // 進程已終止但仍有記錄
+      logger.warn(`[ProcessManager:${this.currentPort}] 清理已崩潰的進程記錄 (PID: ${this.serverProcess.pid})`);
+      this.serverProcess = null;
+      this.currentPort = null;
     }
   }
 
   /**
-   * 分配一個可用端口
-   * @returns 可用端口號
+   * 獲取當前端口
+   * @returns 當前端口號
    */
-  public allocatePort(): number {
-    // 首先嘗試找到未使用的端口
-    for (let port = this.portRangeStart; port <= this.portRangeEnd; port++) {
-      if (!this.serverProcesses.has(port)) {
-        return port;
-      }
-    }
-    
-    // 如果範圍內沒有可用端口，返回當前端口（將會覆蓋）
-    const port = this.currentPort;
-    this.currentPort = this.currentPort >= this.portRangeEnd 
-      ? this.portRangeStart 
-      : this.currentPort + 1;
-    
-    logger.warn(`[ProcessManager] 端口範圍已滿，使用臨時端口: ${port}`);
-    return port;
-  }
-
-  /**
-   * 釋放端口
-   * @param port 端口號
-   */
-  public releasePort(port: number): void {
-    // 端口釋放不需要特別處理，進程停止後會自動清理
-    logger.debug(`[ProcessManager:${port}] 端口已標記為可釋放`);
+  public getCurrentPort(): number | null {
+    return this.currentPort;
   }
 
   /**
@@ -160,12 +124,12 @@ export class ProcessManager {
   /**
    * 啟動 OpenCode HTTP 伺服器
    * @param projectPath 專案路徑
-   * @param port 連接埠號（可選，不提供則自動分配）
+   * @param port 連接埠號（可選，不提供則使用預設端口）
    * @throws {Error} 伺服器啟動失敗
    */
   public async startServer(projectPath: string, port?: number): Promise<number> {
-    // 如果未指定端口，自動分配
-    const targetPort = port ?? this.allocatePort();
+    // P2-13: 簡化設計 - 使用預設端口
+    const targetPort = port ?? DEFAULT_PORT;
 
     // 檢查伺服器是否已經運行
     if (await this.isServerRunning(targetPort)) {
@@ -185,8 +149,9 @@ export class ProcessManager {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    // 註冊進程
-    this.serverProcesses.set(targetPort, serverProcess);
+    // 註冊進程 (P2-13: 簡化為單一變數)
+    this.serverProcess = serverProcess;
+    this.currentPort = targetPort;
 
     // 處理 stdout
     serverProcess.stdout?.on('data', (data: Buffer) => {
@@ -201,13 +166,15 @@ export class ProcessManager {
     // 處理進程錯誤
     serverProcess.on('error', (error) => {
       logger.error(`[ProcessManager:${targetPort}] 進程錯誤: ${error.message}`);
-      this.serverProcesses.delete(targetPort);
+      this.serverProcess = null;
+      this.currentPort = null;
     });
 
     // 處理進程結束
     serverProcess.on('close', (code) => {
       logger.info(`[ProcessManager:${targetPort}] 伺服器結束，代碼: ${code}`);
-      this.serverProcesses.delete(targetPort);
+      this.serverProcess = null;
+      this.currentPort = null;
     });
 
     // 等待健康檢查通過
@@ -222,13 +189,13 @@ export class ProcessManager {
    * @param port 連接埠號
    */
   public async stopServer(port: number): Promise<void> {
-    const process = this.serverProcesses.get(port);
-
-    if (!process) {
+    // P2-13: 簡化設計 - 直接檢查 serverProcess
+    if (!this.serverProcess || this.currentPort !== port) {
       logger.warn(`[ProcessManager:${port}] 嘗試停止不存在的伺服器程序`);
       return;
     }
 
+    const process = this.serverProcess;
     logger.info(`[ProcessManager] 停止端口 ${port} 的伺服器...`);
 
     return new Promise((resolve, reject) => {
@@ -241,7 +208,8 @@ export class ProcessManager {
         isResolved = true;
         
         clearTimeout(timeout);
-        this.serverProcesses.delete(port);
+        this.serverProcess = null;
+        this.currentPort = null;
         
         logger.info(`[ProcessManager] 伺服器已停止於端口 ${port} (代碼: ${code})`);
         resolve();
@@ -268,7 +236,8 @@ export class ProcessManager {
           setTimeout(() => {
             if (!isResolved) {
               isResolved = true;
-              this.serverProcesses.delete(port);
+              this.serverProcess = null;
+              this.currentPort = null;
               resolve(); // 強制 resolve，避免卡住
             }
           }, 2000);
@@ -329,7 +298,11 @@ export class ProcessManager {
    * @returns 端口列表
    */
   public getActiveServers(): number[] {
-    return Array.from(this.serverProcesses.keys());
+    // P2-13: 簡化設計 - 檢查 serverProcess 是否存在
+    if (this.serverProcess && this.currentPort !== null) {
+      return [this.currentPort];
+    }
+    return [];
   }
 
   /**
@@ -340,6 +313,11 @@ export class ProcessManager {
     this.stopGarbageCollection();
     
     const ports = this.getActiveServers();
+    if (ports.length === 0) {
+      logger.info('[ProcessManager] 沒有活躍伺服器需要清理');
+      return;
+    }
+    
     logger.info(`[ProcessManager] 清理 ${ports.length} 個活躍伺服器...`);
     
     // 使用 Promise.allSettled 確保所有都嘗試關閉

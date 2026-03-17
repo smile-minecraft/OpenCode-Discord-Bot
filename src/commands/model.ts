@@ -130,10 +130,10 @@ async function handleList(interaction: ChatInputCommandInteraction): Promise<voi
         new EmbedBuilder()
           .setColor(Colors.ERROR)
           .setTitle('❌ 無法獲取模型列表')
-          .setDescription('目前沒有已連接的 AI 提供商。\n\n請先使用 `/connect` 指令連接您的 API 提供商，然後再使用此指令。')
+          .setDescription('目前沒有可用的 API Key。\n\n請設定環境變數 OPENAI_API_KEY、ANTHROPIC_API_KEY 或 GOOGLE_API_KEY。')
           .addFields({
             name: '📝 說明',
-            value: '使用 `/connect` 指令可以連接您的 OpenAI、Anthropic、Google 等 API 提供商。',
+            value: '請在伺服器的環境變數中設定 API Key。',
             inline: false,
           }),
       ],
@@ -262,10 +262,10 @@ async function handleInfo(interaction: ChatInputCommandInteraction): Promise<voi
         new EmbedBuilder()
           .setColor(Colors.ERROR)
           .setTitle('❌ 無法獲取模型列表')
-          .setDescription('目前沒有已連接的 AI 提供商。\n\n請先使用 `/connect` 指令連接您的 API 提供商，然後再使用此指令。')
+          .setDescription('目前沒有可用的 API Key。\n\n請在 .env 中設定 OPENCODE_API_KEY 環境變數。')
           .addFields({
             name: '📝 說明',
-            value: '使用 `/connect` 指令可以連接您的 OpenAI、Anthropic、Google 等 API 提供商。',
+            value: 'OPENCODE_API_KEY 是用於存取 OpenCode API 的金鑰。',
             inline: false,
           }),
       ],
@@ -433,7 +433,7 @@ async function handleAutocomplete(interaction: AutocompleteInteraction): Promise
     // 如果沒有 providers 連接，返回提示選項
     console.error('Autocomplete error:', error);
     await interaction.respond([
-      { name: '⚠️ 請先使用 /connect 連接 API 提供商', value: '' }
+      { name: '⚠️ 請在 .env 中設定 OPENCODE_API_KEY', value: '' }
     ]);
   }
 }

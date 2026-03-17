@@ -176,6 +176,7 @@ export class SelectMenuHandler {
    * @param interaction Select Menu 交互對象
    */
   async handle(interaction: AnySelectMenuInteraction): Promise<void> {
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
     const customId = interaction.customId;
     
     // 修復: ComponentType[3] 返回 "SelectMenu" 而不是 "StringSelect"

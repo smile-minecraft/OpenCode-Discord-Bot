@@ -1,6 +1,8 @@
 /**
  * ProcessManager Tests - OpenCode 伺服器進程管理單元測試
- * @description 測試 ProcessManager 的端口分配、服務器啟動/停止、垃圾回收和單例模式
+ * @description 測試 ProcessManager 的服務器啟動/停止、垃圾回收和單例模式
+ * 
+ * P2-13: 簡化架構：使用固定端口 3000，單一 serverProcess 變數
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
@@ -42,11 +44,10 @@ vi.mock('../../src/utils/logger.js', () => ({
   },
 }));
 
-// Mock constants
+// Mock constants - simplified to fixed port 3000
 vi.mock('../../src/config/constants.js', () => ({
   OPENCODE_SERVER: {
-    PORT_RANGE_START: 3000,
-    PORT_RANGE_END: 3100,
+    PORT: 3000,
   },
   TIMEOUTS: {
     HEALTH_CHECK: 50,
@@ -70,60 +71,8 @@ describe('ProcessManager', () => {
     vi.restoreAllMocks();
   });
 
-  describe('allocatePort() - 端口分配', () => {
-    it('應該從範圍起始值開始分配端口', () => {
-      const port = manager.allocatePort();
-      expect(port).toBe(3000);
-    });
-
-    it('應該跳過已使用的端口', () => {
-      // Manually add a "used" port to the map
-      (manager as any).serverProcesses.set(3000, { pid: 1234 } as any);
-      
-      const port = manager.allocatePort();
-      expect(port).toBe(3001);
-    });
-
-    it('當所有端口都使用時應該迴繞到起始值', () => {
-      // Fill all ports in range
-      for (let i = 3000; i <= 3100; i++) {
-        (manager as any).serverProcesses.set(i, { pid: i } as any);
-      }
-      
-      const port = manager.allocatePort();
-      expect(port).toBeGreaterThanOrEqual(3000);
-      expect(port).toBeLessThanOrEqual(3100);
-    });
-
-    // Test removed: allocatePort() returns the first available port, not incrementing
-    // It only uses currentPort when ALL ports in range are occupied
-
-    it('當所有端口都使用時應該使用 currentPort', () => {
-      // Fill all ports in range (3000-3100 = 101 ports)
-      for (let i = 3000; i <= 3100; i++) {
-        (manager as any).serverProcesses.set(i, { pid: i } as any);
-      }
-      
-      // Now currentPort will be used since all ports are occupied
-      // Set currentPort to 3100 (the end of range)
-      (manager as any).currentPort = 3100;
-      
-      const port = manager.allocatePort();
-      // Returns currentPort (3100) before incrementing, then wraps to 3000
-      expect(port).toBe(3100);
-    });
-  });
-
-  describe('releasePort() - 端口釋放', () => {
-    it('應該記錄端口釋放', () => {
-      manager.releasePort(3000);
-      // Just verify no error is thrown - the port will be cleaned by GC
-      expect(true).toBe(true);
-    });
-  });
-
   describe('getBaseUrl() - 獲取基礎 URL', () => {
-    it('應該返回正確格式的 URL', () => {
+    it('應該返回正確格式的 URL (固定端口 3000)', () => {
       const url = manager.getBaseUrl(3000);
       expect(url).toBe('http://127.0.0.1:3000');
     });
@@ -203,7 +152,7 @@ describe('ProcessManager', () => {
       expect(port).toBe(3000);
     });
 
-    it('未指定端口時應該自動分配', async () => {
+    it('固定端口 3000 應該直接使用', async () => {
       const mockProcess = {
         on: vi.fn(),
         stdout: { on: vi.fn() },
@@ -216,11 +165,10 @@ describe('ProcessManager', () => {
       mockSpawnFn.mockReturnValue(mockProcess as any);
       mockFetchFn.mockResolvedValue({ ok: true } as Response);
 
+      // 不指定端口，應該使用默認端口 3000
       const port = await manager.startServer('/test/project');
 
-      expect(port).toBeDefined();
-      expect(port).toBeGreaterThanOrEqual(3000);
-      expect(port).toBeLessThanOrEqual(3100);
+      expect(port).toBe(3000);
     });
 
     it('健康檢查超時時應該拋出錯誤', async () => {
@@ -239,7 +187,8 @@ describe('ProcessManager', () => {
       await expect(manager.startServer('/test/project', 3000)).rejects.toThrow('健康檢查超時');
     });
 
-    it('應該將進程註冊到 serverProcesses Map', async () => {
+    // P2-13: 簡化設計 - 測試 serverProcess 和 currentPort
+    it('應該將進程註冊到 serverProcess', async () => {
       const mockProcess = {
         on: vi.fn(),
         stdout: { on: vi.fn() },
@@ -257,7 +206,8 @@ describe('ProcessManager', () => {
 
       await manager.startServer('/test/project', 3000);
 
-      expect((manager as any).serverProcesses.has(3000)).toBe(true);
+      expect((manager as any).serverProcess).toBe(mockProcess);
+      expect((manager as any).currentPort).toBe(3000);
     });
   });
 
@@ -278,7 +228,9 @@ describe('ProcessManager', () => {
         pid: 1234,
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      // P2-13: 簡化設計 - 使用 serverProcess 和 currentPort
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       await manager.stopServer(3000);
 
@@ -293,7 +245,8 @@ describe('ProcessManager', () => {
       expect(warnSpy).toHaveBeenCalled();
     });
 
-    it('停止後應該從 Map 中移除', async () => {
+    // P2-13: 簡化設計 - 測試 stopServer 後清理
+    it('停止後應該清除 serverProcess', async () => {
       const mockProcess = {
         on: vi.fn(),
         once: vi.fn((event, callback) => {
@@ -308,11 +261,13 @@ describe('ProcessManager', () => {
         pid: 1234,
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       await manager.stopServer(3000);
 
-      expect((manager as any).serverProcesses.has(3000)).toBe(false);
+      expect((manager as any).serverProcess).toBeNull();
+      expect((manager as any).currentPort).toBeNull();
     });
 
     it('超時時應該強制 kill 進程', async () => {
@@ -328,7 +283,8 @@ describe('ProcessManager', () => {
         pid: 1234,
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       vi.useFakeTimers();
       
@@ -348,6 +304,7 @@ describe('ProcessManager', () => {
   });
 
   describe('cleanupStaleProcesses() - 垃圾回收', () => {
+    // P2-13: 簡化設計 - 測試單一 serverProcess 清理
     it('應該清理已終止的進程記錄', () => {
       const mockProcess = {
         pid: 1234,
@@ -355,11 +312,13 @@ describe('ProcessManager', () => {
         kill: vi.fn(),
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       manager.cleanupStaleProcesses();
 
-      expect((manager as any).serverProcesses.has(3000)).toBe(false);
+      expect((manager as any).serverProcess).toBeNull();
+      expect((manager as any).currentPort).toBeNull();
     });
 
     it('應該清理 pid 為 undefined 的進程記錄', () => {
@@ -369,11 +328,12 @@ describe('ProcessManager', () => {
         kill: vi.fn(),
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       manager.cleanupStaleProcesses();
 
-      expect((manager as any).serverProcesses.has(3000)).toBe(false);
+      expect((manager as any).serverProcess).toBeNull();
     });
 
     it('應該保留正常運行的進程', () => {
@@ -385,11 +345,12 @@ describe('ProcessManager', () => {
         }),
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       manager.cleanupStaleProcesses();
 
-      expect((manager as any).serverProcesses.has(3000)).toBe(true);
+      expect((manager as any).serverProcess).toBe(mockProcess);
     });
 
     it('應該處理 kill(0) 拋出錯誤的情況', () => {
@@ -401,23 +362,24 @@ describe('ProcessManager', () => {
         }),
       };
 
-      (manager as any).serverProcesses.set(3000, mockProcess as any);
+      (manager as any).serverProcess = mockProcess;
+      (manager as any).currentPort = 3000;
 
       manager.cleanupStaleProcesses();
 
-      expect((manager as any).serverProcesses.has(3000)).toBe(false);
+      expect((manager as any).serverProcess).toBeNull();
     });
   });
 
   describe('getActiveServers() - 獲取活動服務器', () => {
     it('應該返回所有活動服務器的端口列表', () => {
-      (manager as any).serverProcesses.set(3000, { pid: 1 } as any);
-      (manager as any).serverProcesses.set(3001, { pid: 2 } as any);
-      (manager as any).serverProcesses.set(3002, { pid: 3 } as any);
+      // P2-13: 簡化設計 - 設置 serverProcess 和 currentPort
+      (manager as any).serverProcess = { pid: 1, killed: false };
+      (manager as any).currentPort = 3000;
 
       const activeServers = manager.getActiveServers();
 
-      expect(activeServers).toEqual([3000, 3001, 3002]);
+      expect(activeServers).toEqual([3000]);
     });
 
     it('沒有活動服務器時應該返回空數組', () => {
@@ -427,7 +389,7 @@ describe('ProcessManager', () => {
   });
 
   describe('cleanupAll() - 清理所有服務器', () => {
-    it('應該停止所有活動服務器', async () => {
+    it('應該停止所有活動伺服器', async () => {
       const mockProcess1 = {
         on: vi.fn(),
         once: vi.fn((event, cb) => event === 'close' && cb(null)),
@@ -437,25 +399,21 @@ describe('ProcessManager', () => {
         killed: false,
         pid: 1234,
       };
-      
-      const mockProcess2 = {
-        on: vi.fn(),
-        once: vi.fn((event, cb) => event === 'close' && cb(null)),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        kill: vi.fn(),
-        killed: false,
-        pid: 5678,
-      };
 
-      (manager as any).serverProcesses.set(3000, mockProcess1 as any);
-      (manager as any).serverProcesses.set(3001, mockProcess2 as any);
+      // P2-13: 簡化設計 - 設置 serverProcess 和 currentPort
+      (manager as any).serverProcess = mockProcess1;
+      (manager as any).currentPort = 3000;
 
       await manager.cleanupAll();
 
       expect(mockProcess1.kill).toHaveBeenCalledWith('SIGTERM');
-      expect(mockProcess2.kill).toHaveBeenCalledWith('SIGTERM');
-      expect((manager as any).serverProcesses.size).toBe(0);
+      expect((manager as any).serverProcess).toBeNull();
+      expect((manager as any).currentPort).toBeNull();
+    });
+
+    it('沒有活動伺服器時應該正常處理', async () => {
+      await manager.cleanupAll();
+      // 不應該拋出錯誤
     });
   });
 

@@ -18,8 +18,8 @@ export interface ConfigFile {
       timeout: number;
     };
     server: {
-      portRangeStart: number;
-      portRangeEnd: number;
+      port: number;
+      url: string;
     };
   };
   model: {
@@ -83,8 +83,8 @@ export const OPENCODE_API = {
  * OpenCode 伺服器配置
  */
 export const OPENCODE_SERVER = {
-  PORT_RANGE_START: loadedConfig?.opencode?.server?.portRangeStart ?? DEFAULTS.OPENCODE_SERVER.PORT_RANGE_START,
-  PORT_RANGE_END: loadedConfig?.opencode?.server?.portRangeEnd ?? DEFAULTS.OPENCODE_SERVER.PORT_RANGE_END,
+  PORT: loadedConfig?.opencode?.server?.port ?? DEFAULTS.OPENCODE_SERVER.PORT,
+  URL: loadedConfig?.opencode?.server?.url ?? DEFAULTS.OPENCODE_SERVER.URL,
 };
 
 /**

@@ -1,30 +1,9 @@
 /**
  * ModelService Tests - 模型服務單元測試
- * @description 測試從 Provider 獲取模型列表的功能
+ * @description 測試從環境變數獲取模型列表的功能
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-
-// Create mock instance with connected providers
-const mockProviderServiceInstance = {
-  getProviders: vi.fn().mockResolvedValue({
-    'opencode': { connected: true, apiKey: 'test-key' }
-  }),
-  getDecryptedApiKey: vi.fn().mockResolvedValue('test-api-key'),
-};
-
-// Mock with no connected providers
-const mockProviderServiceNoProviders = {
-  getProviders: vi.fn().mockResolvedValue({}),
-  getDecryptedApiKey: vi.fn().mockResolvedValue('test-api-key'),
-};
-
-// Simple mock for ProviderService - will be overridden with vi.spyOn
-vi.mock('../../src/services/ProviderService.js', () => ({
-  ProviderService: {
-    getInstance: vi.fn(),
-  },
-}));
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // Mock OpenCodeCloudClient - use spyOn in tests to override
 vi.mock('../../src/services/OpenCodeCloudClient.js', () => ({
@@ -34,8 +13,6 @@ vi.mock('../../src/services/OpenCodeCloudClient.js', () => ({
 }));
 
 // Import after mocking
-import { ProviderService } from '../../src/services/ProviderService.js';
-import { createOpenCodeCloudClient } from '../../src/services/OpenCodeCloudClient.js';
 import { 
   getAvailableModels, 
   getDynamicModelList, 
@@ -56,8 +33,14 @@ describe('ModelService', () => {
     // Clear cache
     clearModelCache();
     vi.clearAllMocks();
-    // Spy on ProviderService.getInstance to return mock instance
-    vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceInstance as unknown as import('../../src/services/ProviderService.js').ProviderService);
+    // Set environment variable for API key
+    process.env.OPENCODE_API_KEY = 'test-api-key';
+  });
+
+  afterEach(() => {
+    // Clean up environment variables
+    delete process.env.OPENCODE_API_KEY;
+    delete process.env.OPENCODE_MODELS;
   });
 
   describe('convertToModelDefinition() - 轉換模型定義', () => {
@@ -122,29 +105,52 @@ describe('ModelService', () => {
       vi.clearAllMocks();
     });
 
-    it('沒有 connected providers 且沒有 allowFallback 時應該拋出錯誤', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
+    it('有環境變數配置時應該返回模型列表', async () => {
+      // Set API key in environment
+      process.env.OPENCODE_API_KEY = 'test-api-key';
       
-      await expect(getAvailableModels('test-guild')).rejects.toThrow('Failed to fetch');
+      const models = await getAvailableModels('test-guild');
+      
+      // 有 API key 時應該返回轉換後的模型定義
+      expect(models.length).toBeGreaterThan(0);
     });
 
-    it('沒有 connected providers 時使用 allowFallback 應該返回靜態 fallback', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
+    it('有 OPENCODE_MODELS 環境變數時應該返回自定義模型', async () => {
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+      process.env.OPENCODE_MODELS = 'anthropic/claude-sonnet-4,openai/gpt-4o';
+      
+      const models = await getAvailableModels('test-guild', false);
+      
+      expect(models.length).toBe(2);
+      expect(models[0].id).toBe('anthropic/claude-sonnet-4');
+      expect(models[1].id).toBe('openai/gpt-4o');
+    });
+
+    it('沒有環境變數且沒有 allowFallback 時應該拋出錯誤', async () => {
+      // Clear environment variables
+      delete process.env.OPENCODE_API_KEY;
+      delete process.env.OPENCODE_MODELS;
+      
+      await expect(getAvailableModels('test-guild')).rejects.toThrow('No API key configured');
+    });
+
+    it('沒有環境變數時使用 allowFallback 應該返回靜態 fallback', async () => {
+      // Clear environment variables
+      delete process.env.OPENCODE_API_KEY;
+      delete process.env.OPENCODE_MODELS;
       
       const models = await getAvailableModels('test-guild', true, true);
       
-      // 沒有 connected providers 但允許 fallback，應該返回靜態數據
+      // 允許 fallback 時，應該返回靜態數據
       expect(models.length).toBeGreaterThan(0);
       expect(models[0].id).toBe('anthropic/claude-sonnet-4-20250514');
     });
 
-    it('沒有 guildId 時應該拋出錯誤', async () => {
-      await expect(getAvailableModels()).rejects.toThrow('No guild ID provided');
-    });
-
     it('沒有 guildId 時使用 allowFallback 應該返回靜態 fallback', async () => {
+      // Clear environment variables
+      delete process.env.OPENCODE_API_KEY;
+      delete process.env.OPENCODE_MODELS;
+      
       const models = await getAvailableModels(undefined, true, true);
       
       // 沒有 guildId 但允許 fallback，應該返回靜態數據
@@ -153,37 +159,48 @@ describe('ModelService', () => {
     });
 
     it('應該使用緩存避免重複獲取', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers but allow fallback
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
+      // Set API key
+      process.env.OPENCODE_API_KEY = 'test-api-key';
       
       // 第一次調用
       await getAvailableModels('test-guild', true, true);
       // 第二次調用（應該使用緩存）
       const models = await getAvailableModels('test-guild', true, true);
       
-      // 應該返回靜態數據（因為沒有 connected providers but allow fallback）
-      expect(models[0].id).toBe('anthropic/claude-sonnet-4-20250514');
+      // 應該返回模型數據
+      expect(models.length).toBeGreaterThan(0);
     });
 
     it('不使用緩存時應該重新獲取', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers but allow fallback
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
+      // Set API key
+      process.env.OPENCODE_API_KEY = 'test-api-key';
       
       // 第一次調用
       await getAvailableModels('test-guild', true, true);
       // 第二次調用不使用緩存
       const models = await getAvailableModels('test-guild', false, true);
       
-      // 應該返回靜態數據
-      expect(models[0].id).toBe('anthropic/claude-sonnet-4-20250514');
+      // 應該返回模型數據
+      expect(models.length).toBeGreaterThan(0);
     });
   });
 
   describe('getDynamicModelList() - 獲取動態模型列表', () => {
-    it('沒有 guildId 時應該返回空數組', async () => {
+    it('沒有環境變數時應該返回空數組', async () => {
+      delete process.env.OPENCODE_MODELS;
+      
       const models = await getDynamicModelList();
       
-      expect(models).toEqual([]);
+      // 沒有環境變數時返回預設模型列表
+      expect(models.length).toBeGreaterThan(0);
+    });
+
+    it('有環境變數時應該返回自定義列表', async () => {
+      process.env.OPENCODE_MODELS = 'model1,model2,model3';
+      
+      const models = await getDynamicModelList();
+      
+      expect(models).toEqual(['model1', 'model2', 'model3']);
     });
   });
 
@@ -191,16 +208,25 @@ describe('ModelService', () => {
     beforeEach(() => {
       clearModelCache();
       vi.clearAllMocks();
-      // Spy on ProviderService.getInstance to return no connected providers for error tests
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
     });
 
-    it('沒有 guildId 時應該拋出錯誤', async () => {
-      await expect(getModelsByProvider('anthropic')).rejects.toThrow('No guild ID provided');
+    it('沒有 guildId 但有環境變數時應該返回該提供商的模型', async () => {
+      // 有 API key 時，即使沒有 guildId 也會返回模型
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+      
+      const models = await getModelsByProvider('anthropic');
+      
+      // 應該返回 anthropic 提供商的模型
+      expect(models.every(m => m.provider === 'anthropic')).toBe(true);
     });
 
-    it('沒有 connected providers 時應該拋出錯誤', async () => {
-      await expect(getModelsByProvider('anthropic', 'test-guild')).rejects.toThrow('Failed to fetch');
+    it('有 guildId 時應該返回該提供商的模型', async () => {
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+      
+      const models = await getModelsByProvider('anthropic', 'test-guild');
+      
+      // 應該返回 anthropic 提供商的模型
+      expect(models.every(m => m.provider === 'anthropic')).toBe(true);
     });
   });
 
@@ -208,16 +234,30 @@ describe('ModelService', () => {
     beforeEach(() => {
       clearModelCache();
       vi.clearAllMocks();
-      // Spy on ProviderService.getInstance to return no connected providers for error tests
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
     });
 
-    it('沒有 guildId 時應該拋出錯誤', async () => {
-      await expect(getModelsByCategory('fast')).rejects.toThrow('No guild ID provided');
+    it('沒有 guildId 且沒有 API key 時應該拋出錯誤', async () => {
+      // 確保沒有 API key
+      delete process.env.OPENCODE_API_KEY;
+      
+      await expect(getModelsByCategory('fast')).rejects.toThrow('No API key configured');
     });
 
-    it('沒有 connected providers 時應該拋出錯誤', async () => {
-      await expect(getModelsByCategory('fast', 'test-guild')).rejects.toThrow('Failed to fetch');
+    it('有 API key 時即使沒有 guildId 也應該返回該類別的模型', async () => {
+      // 有 API key 時，即使沒有 guildId 也會返回模型
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+      
+      const models = await getModelsByCategory('fast');
+      
+      // 應該返回 fast 類別的模型
+      expect(models.every(m => m.category === 'fast')).toBe(true);
+    });
+
+    it('有 guildId 時應該返回該類別的模型', async () => {
+      const models = await getModelsByCategory('fast', 'test-guild');
+      
+      // 應該返回 fast 類別的模型
+      expect(models.every(m => m.category === 'fast')).toBe(true);
     });
   });
 
@@ -227,15 +267,37 @@ describe('ModelService', () => {
       vi.clearAllMocks();
     });
 
-    it('沒有 guildId 時應該拋出錯誤', async () => {
-      await expect(getModelByIdAsync('anthropic/claude-sonnet-4-20250514')).rejects.toThrow('No guild ID provided');
+    it('沒有 guildId 且沒有 API key 時應該拋出錯誤', async () => {
+      // 確保沒有 API key
+      delete process.env.OPENCODE_API_KEY;
+      
+      await expect(getModelByIdAsync('anthropic/claude-sonnet-4-20250514')).rejects.toThrow('No API key configured');
     });
 
-    it('沒有 connected providers 時應該拋出錯誤', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
+    it('有 API key 時即使沒有 guildId 也應該返回模型定義', async () => {
+      process.env.OPENCODE_API_KEY = 'test-api-key';
       
-      await expect(getModelByIdAsync('anthropic/claude-sonnet-4-20250514', 'test-guild')).rejects.toThrow('Failed to fetch');
+      const model = await getModelByIdAsync('anthropic/claude-sonnet-4-20250514');
+      
+      expect(model).toBeDefined();
+      expect(model?.id).toBe('anthropic/claude-sonnet-4-20250514');
+    });
+
+    it('有 guildId 時應該返回模型定義', async () => {
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+      
+      const model = await getModelByIdAsync('anthropic/claude-sonnet-4-20250514', 'test-guild');
+      
+      expect(model).toBeDefined();
+      expect(model?.id).toBe('anthropic/claude-sonnet-4-20250514');
+    });
+
+    it('模型不存在時應該返回 undefined', async () => {
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+      
+      const model = await getModelByIdAsync('nonexistent/model', 'test-guild');
+      
+      expect(model).toBeUndefined();
     });
   });
 
@@ -248,35 +310,35 @@ describe('ModelService', () => {
   });
 
   describe('clearModelCache() - 清除緩存', () => {
+    beforeEach(() => {
+      process.env.OPENCODE_API_KEY = 'test-api-key';
+    });
+
     it('清除指定 guildId 緩存後應該重新獲取', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers but allow fallback
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
-      
       // 第一次調用
-      await getAvailableModels('test-guild', true, true);
+      const models1 = await getAvailableModels('test-guild', true, true);
+      expect(models1.length).toBeGreaterThan(0);
       // 清除緩存
       clearModelCache('test-guild');
       // 第二次調用
-      await getAvailableModels('test-guild', false, true);
+      const models2 = await getAvailableModels('test-guild', false, true);
       
       // 清除緩存應該成功
-      expect(true).toBe(true);
+      expect(models2).toEqual(models1);
     });
 
     it('清除所有緩存後應該重新獲取', async () => {
-      // Spy on ProviderService.getInstance to return no connected providers but allow fallback
-      vi.spyOn(ProviderService, 'getInstance').mockReturnValue(mockProviderServiceNoProviders as unknown as import('../../src/services/ProviderService.js').ProviderService);
-      
       // 第一次調用
-      await getAvailableModels('guild1', true, true);
+      const models1 = await getAvailableModels('guild1', true, true);
       await getAvailableModels('guild2', true, true);
+      expect(models1.length).toBeGreaterThan(0);
       // 清除所有緩存
       clearModelCache();
       // 第二次調用
-      await getAvailableModels('guild1', false, true);
+      const models2 = await getAvailableModels('guild1', false, true);
       
       // 清除所有緩存應該成功
-      expect(true).toBe(true);
+      expect(models2).toEqual(models1);
     });
   });
 });

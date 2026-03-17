@@ -58,7 +58,6 @@ import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js
 import { permissionCommand, executePermissionCommand } from '../commands/permission.js';
 import { command as helpCommand, execute as helpExecute } from '../commands/help.js';
 import { setupCommand, handleSetupCommand, handleSetupAutocomplete } from '../commands/index.js';
-import { connectCommand, handleConnectCommand } from '../commands/connect.js';
 
 // Models data
 import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
@@ -393,7 +392,6 @@ export class DiscordClient extends Client {
         permissionCommand,
         helpCommand,
         setupCommand,
-        connectCommand,
       ];
 
       if (guild) {
@@ -859,7 +857,7 @@ export class DiscordClient extends Client {
               new EmbedBuilder()
                 .setColor(Colors.ERROR)
                 .setTitle('❌ 無法獲取模型列表')
-                .setDescription('無法獲取該提供商的模型列表。請確保您已使用 `/connect` 指令正確配置了該提供商。')
+                .setDescription('無法獲取該提供商的模型列表。請確保已設定 OPENCODE_API_KEY 環境變數。')
             ],
             components: []
           });
@@ -1086,9 +1084,6 @@ export class DiscordClient extends Client {
           break;
         case 'setup':
           await handleSetupCommand(interaction as any);
-          break;
-        case 'connect':
-          await handleConnectCommand(interaction as any);
           break;
         default:
           await interaction.reply({

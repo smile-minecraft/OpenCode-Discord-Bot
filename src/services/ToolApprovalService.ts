@@ -511,6 +511,7 @@ export class ToolApprovalService {
     const record: ToolApprovalRecord = {
       id: `approval_${Date.now()}`,
       sessionId: request.sessionId,
+      guildId: request.guildId,
       toolName: request.toolName,
       pattern: '*',
       action,
