@@ -203,11 +203,15 @@ export class SelectMenuHandler {
         if (this.options.logCalls) {
           console.warn(`[SelectMenuHandler] No handler found for: ${customId} (${componentType})`);
         }
+        await interaction.editReply({ content: '無法找到對應的處理器' }).catch(() => {});
         return;
       }
 
       // 執行處理器
       await handler.config.callback(interaction);
+      
+      // 處理完成後編輯回覆
+      await interaction.editReply({ content: '處理完成' }).catch(() => {});
     } catch (error) {
       await this.handleError(error, interaction, {
         showToUser: true,

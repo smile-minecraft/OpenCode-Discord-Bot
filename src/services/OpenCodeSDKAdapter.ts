@@ -238,6 +238,13 @@ export class OpenCodeSDKAdapter {
   }
 
   /**
+   * 檢查適配器是否已初始化
+   */
+  public isInitialized(): boolean {
+    return this.client !== null && this.port !== null;
+  }
+
+  /**
    * 獲取基礎 URL
    */
   public getBaseUrl(): string | null {

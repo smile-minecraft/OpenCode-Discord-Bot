@@ -10,10 +10,60 @@ import {
   Message,
   EmbedBuilder,
 } from 'discord.js';
-import { SSEEvent, MessageEventData, SessionCompleteEventData, ErrorEventData } from './SSEClient.js';
 import { createEventStreamAdapter, IEventStreamAdapter } from './EventStreamFactory.js';
 import { Session } from '../database/models/Session.js';
 import logger from '../utils/logger.js';
+
+// ============== SSE 事件類型定義（從 SDK 適配器導入）==============
+
+/**
+ * SSE 事件類型
+ */
+export type SSEEventType = 
+  | 'connected'
+  | 'message'
+  | 'tool_request'
+  | 'error'
+  | 'session_complete'
+  | 'ping';
+
+/**
+ * SSE 事件處理器
+ */
+export type SSEEventHandler = (event: SSEEvent) => void;
+
+/**
+ * SSE 事件
+ */
+export interface SSEEvent {
+  type: SSEEventType;
+  data: unknown;
+}
+
+/**
+ * 訊息事件數據
+ */
+export interface MessageEventData {
+  content: string;
+  sessionId: string;
+  isComplete?: boolean;
+}
+
+/**
+ * Session 完成事件數據
+ */
+export interface SessionCompleteEventData {
+  sessionId: string;
+  success: boolean;
+}
+
+/**
+ * 錯誤事件數據
+ */
+export interface ErrorEventData {
+  message: string;
+  sessionId: string;
+}
 
 // ============== 類型定義 ==============
 
@@ -270,7 +320,7 @@ export class StreamingMessageManager {
           data.sessionId.endsWith(stream.sessionId)) {
         // 累積內容
         stream.content += data.content;
-        stream.isComplete = data.isComplete;
+        stream.isComplete = data.isComplete ?? false;
         stream.updateQueued = true;
 
         // 如果內容太長，截斷

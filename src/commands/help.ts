@@ -3,7 +3,7 @@
  * @description 顯示機器人指令幫助
  */
 
-import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ChatInputCommandInteraction } from 'discord.js';
 
 const command = new SlashCommandBuilder()
   .setName('help')
@@ -25,10 +25,7 @@ const command = new SlashCommandBuilder()
       )
   );
 
-async function execute(interaction: {
-  options: { getString: (name: string) => string | null };
-  reply: (options: { embeds: EmbedBuilder[]; flags?: number[] }) => Promise<void>;
-}): Promise<void> {
+async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const selectedCommand = interaction.options.getString('command');
 
   if (selectedCommand) {

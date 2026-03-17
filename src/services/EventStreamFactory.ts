@@ -1,12 +1,9 @@
 /**
- * Event Stream Factory - 工廠模式適配器
- * @description 根據 FEATURE_FLAGS.USE_SDK_ADAPTER 配置返回相應的 SSE 適配器
- *              統一介面以確保 StreamingMessageManager 可以無縫切換
+ * Event Stream Factory - SDK 適配器工廠
+ * @description 統一介面以確保 StreamingMessageManager 可以使用 SDK Adapter
  */
 
 import logger from '../utils/logger.js';
-import { FEATURE_FLAGS } from '../config/constants.js';
-import { SSEClient } from './SSEClient.js';
 import { SSEEventEmitterAdapter, SDKEvent, ISSEEventEmitterAdapter } from './SSEEventEmitterAdapter.js';
 
 // ============== 類型定義 ==============
@@ -18,7 +15,7 @@ export type EventStreamEventHandler = (event: unknown) => void;
 
 /**
  * Event Stream Adapter 統一介面
- * @description 定義兩種適配器必須實現的共同方法
+ * @description 定義適配器必須實現的共同方法
  */
 export interface IEventStreamAdapter {
   /** 連接/啟動 */
@@ -46,23 +43,18 @@ export interface ISDKEventStreamAdapter extends IEventStreamAdapter {
 // ============== 工廠實現 ==============
 
 /**
- * 根據配置創建 Event Stream 適配器
- * @returns SSEClient（默認）或 SSEEventEmitterAdapter（SDK 模式）
+ * 創建 Event Stream 適配器
+ * @returns SDKAdapterWrapper 實例
  */
 export function createEventStreamAdapter(): IEventStreamAdapter {
-  if (FEATURE_FLAGS.USE_SDK_ADAPTER) {
-    logger.info('[EventStreamFactory] 使用 SDK 適配器 (SSEEventEmitterAdapter)');
-    return new SDKAdapterWrapper();
-  }
-
-  logger.info('[EventStreamFactory] 使用默認 SSE 客戶端 (SSEClient)');
-  return new SSEClient();
+  logger.info('[EventStreamFactory] 使用 SDK 適配器 (SSEEventEmitterAdapter)');
+  return new SDKAdapterWrapper();
 }
 
 /**
  * SDK 適配器包裝類
  * @description 將 SSEEventEmitterAdapter 的 start/stop 接口轉換為 connect/disconnect
- *              以匹配 SSEClient 的接口模式
+ *              以提供統一接口模式
  */
 export class SDKAdapterWrapper implements IEventStreamAdapter {
   private adapter: ISSEEventEmitterAdapter | null = null;
@@ -74,7 +66,7 @@ export class SDKAdapterWrapper implements IEventStreamAdapter {
   private handlers: Map<string, Set<EventStreamEventHandler>> = new Map();
 
   /**
-   * 連接到事件流（模擬 SSEClient 的 connect）
+   * 連接到事件流（模擬 connect）
    * @param _port 端口（SDK 模式下不需要）
    * @param sessionId Session ID
    */
@@ -258,8 +250,8 @@ export function initializeEventStreamAdapter(): IEventStreamAdapter {
 /**
  * 獲取當前適配器類型
  */
-export function getAdapterType(): 'SSEClient' | 'SDKAdapter' {
-  return FEATURE_FLAGS.USE_SDK_ADAPTER ? 'SDKAdapter' : 'SSEClient';
+export function getAdapterType(): 'SDKAdapter' {
+  return 'SDKAdapter';
 }
 
 // ============== 導出 ==============

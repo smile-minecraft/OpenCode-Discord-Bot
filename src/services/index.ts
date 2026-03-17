@@ -8,10 +8,6 @@ export type { SessionCompletedEvent, NewSessionRequest } from './SessionQueueInt
 export { getSessionManager, initializeSessionManager } from './SessionManager.js';
 export type { SessionManager, CreateSessionOptions, SessionExecutionResult } from './SessionManager.js';
 
-// SSE Client
-export { SSEClient, getSSEClient, initializeSSEClient } from './SSEClient.js';
-export type { SSEEvent, SSEEventType, SSEEventHandler, MessageEventData, ToolRequestEventData, ConnectedEventData, ErrorEventData, SessionCompleteEventData } from './SSEClient.js';
-
 // Event Stream Factory
 export { createEventStreamAdapter, getEventStreamAdapter, initializeEventStreamAdapter, getAdapterType } from './EventStreamFactory.js';
 export type { IEventStreamAdapter, ISDKEventStreamAdapter, EventStreamEventHandler } from './EventStreamFactory.js';

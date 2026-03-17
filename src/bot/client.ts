@@ -44,20 +44,14 @@ import { isButtonAllowed } from '../utils/RateLimiter.js';
 
 // 服務
 import { getSessionManager } from '../services/SessionManager.js';
-import { createProjectManager } from '../services/ProjectManager.js';
-import { getQueueManager } from '../services/QueueManager.js';
 
 // Commands
 import { createSessionCommand, handleSessionCommand, handleSessionModelAutocomplete } from '../commands/session.js';
-import { createProjectCommand, ProjectCommandHandler } from '../commands/project.js';
-import { model, handleAutocomplete as handleModelAutocomplete } from '../commands/model.js';
-import { agent, handleAutocomplete as handleAgentAutocomplete } from '../commands/agent.js';
-import { queueCommand, handleQueueCommand } from '../commands/queue.js';
+import { command as promptCommand, execute as handlePromptCommand } from '../commands/prompt.js';
 import { codeCommand, handleCodeCommand } from '../commands/code.js';
-import { worktreeCommand, executeWorktreeCommand } from '../commands/worktree.js';
-import { permissionCommand, executePermissionCommand } from '../commands/permission.js';
-import { command as helpCommand, execute as helpExecute } from '../commands/help.js';
-import { setupCommand, handleSetupCommand, handleSetupAutocomplete } from '../commands/index.js';
+import { permissionCommand, executePermissionCommand as handlePermissionCommand } from '../commands/permission.js';
+import { command as helpCommand, execute as handleHelpCommand } from '../commands/help.js';
+import { command as setupCommand, execute as handleSetupCommand } from '../commands/setup.js';
 
 // Models data
 import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
@@ -99,8 +93,6 @@ export class DiscordClient extends Client {
   // ==================== Services (Lazy loaded) ====================
 
   private _sessionManager?: ReturnType<typeof getSessionManager>;
-  private _projectManager?: ReturnType<typeof createProjectManager>;
-  private _queueManager?: ReturnType<typeof getQueueManager>;
 
   /**
    * 獲取 Session Manager
@@ -110,26 +102,6 @@ export class DiscordClient extends Client {
       this._sessionManager = getSessionManager();
     }
     return this._sessionManager;
-  }
-
-  /**
-   * 獲取 Project Manager
-   */
-  get projectManager() {
-    if (!this._projectManager) {
-      this._projectManager = createProjectManager();
-    }
-    return this._projectManager;
-  }
-
-  /**
-   * 獲取 Queue Manager
-   */
-  get queueManager() {
-    if (!this._queueManager) {
-      this._queueManager = getQueueManager();
-    }
-    return this._queueManager;
   }
 
   // ==================== Options ====================
@@ -383,12 +355,8 @@ export class DiscordClient extends Client {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const commands: any[] = [
         createSessionCommand(),
-        createProjectCommand(),
-        (model as any).data,
-        (agent as any).data,
-        queueCommand,
+        promptCommand,
         codeCommand,
-        worktreeCommand,
         permissionCommand,
         helpCommand,
         setupCommand,
@@ -441,31 +409,7 @@ export class DiscordClient extends Client {
     // 1. 註冊 Session Button Handlers
     registerSessionButtonHandlers(this.buttonHandler, this.sessionManager);
 
-    // 2. Queue Button Handlers
-    this.buttonHandler.registerMany([
-      {
-        customId: 'queue_refresh:',
-        callback: this.handleQueueRefresh.bind(this),
-        description: '重新整理隊列狀態',
-      },
-      {
-        customId: 'queue_clear',
-        callback: this.handleQueueClear.bind(this),
-        description: '清空隊列',
-      },
-      {
-        customId: 'queue_pause',
-        callback: this.handleQueuePause.bind(this),
-        description: '暫停隊列',
-      },
-      {
-        customId: 'queue_resume',
-        callback: this.handleQueueResume.bind(this),
-        description: '恢復隊列',
-      },
-    ]);
-
-    // 3. Passthrough Button Handlers
+    // 2. Passthrough Button Handlers
     this.buttonHandler.registerMany([
       {
         customId: 'passthrough:disable:',
@@ -485,89 +429,6 @@ export class DiscordClient extends Client {
     ]);
 
     logger.info(`[ButtonHandler] Registered ${this.buttonHandler.getRegisteredHandlers().length} handlers`);
-  }
-
-  // ============== Queue Button Handlers ==============
-
-  /**
-   * 處理 Queue Refresh 按鈕
-   */
-  private async handleQueueRefresh(interaction: ButtonInteraction): Promise<void> {
-    await interaction.deferReply();
-
-    try {
-      const queueState = this.queueManager.getState();
-      const embed = this.createQueueStatusEmbed(queueState);
-
-      await interaction.editReply({
-        embeds: [embed],
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
-      await interaction.editReply({
-        content: `❌ 重新整理失敗: ${errorMessage}`,
-      });
-    }
-  }
-
-  /**
-   * 處理 Queue Clear 按鈕
-   */
-  private async handleQueueClear(interaction: ButtonInteraction): Promise<void> {
-    await interaction.deferReply();
-
-    try {
-      const cleared = this.queueManager.clearQueue();
-      
-      await interaction.editReply({
-        content: `🗑️ 已清空隊列，共移除 ${cleared} 個任務`,
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
-      await interaction.editReply({
-        content: `❌ 清空隊列失敗: ${errorMessage}`,
-      });
-    }
-  }
-
-  /**
-   * 處理 Queue Pause 按鈕
-   */
-  private async handleQueuePause(interaction: ButtonInteraction): Promise<void> {
-    await interaction.deferReply();
-
-    try {
-      this.queueManager.pause();
-      
-      await interaction.editReply({
-        content: '⏸️ 隊列已暫停',
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
-      await interaction.editReply({
-        content: `❌ 暫停隊列失敗: ${errorMessage}`,
-      });
-    }
-  }
-
-  /**
-   * 處理 Queue Resume 按鈕
-   */
-  private async handleQueueResume(interaction: ButtonInteraction): Promise<void> {
-    await interaction.deferReply();
-
-    try {
-      this.queueManager.resume();
-      
-      await interaction.editReply({
-        content: '▶️ 隊列已恢復',
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '未知錯誤';
-      await interaction.editReply({
-        content: `❌ 恢復隊列失敗: ${errorMessage}`,
-      });
-    }
   }
 
   // ============== Passthrough Button Handlers ==============
@@ -661,39 +522,6 @@ export class DiscordClient extends Client {
         content: `❌ 切換 Passthrough 失敗: ${errorMessage}`,
       });
     }
-  }
-
-  // ============== Queue Status Embed Builder ==============
-
-  /**
-   * 創建隊列狀態 Embed
-   */
-  private createQueueStatusEmbed(state: {
-    isPaused: boolean;
-    isProcessing: boolean;
-    pendingCount: number;
-    completedCount: number;
-    failedCount: number;
-    currentTask?: { id: string; type: string } | null;
-  }): EmbedBuilder {
-    const { EmbedBuilder } = require('discord.js');
-    
-    const embed = new EmbedBuilder()
-      .setTitle('📋 任務隊列狀態')
-      .setColor(state.isPaused ? 0xffa500 : 0x00ff00)
-      .addFields(
-        { name: '狀態', value: state.isPaused ? '⏸️ 已暫停' : '▶️ 執行中', inline: true },
-        { name: '待處理', value: `${state.pendingCount} 個`, inline: true },
-        { name: '已完成', value: `${state.completedCount} 個`, inline: true },
-        { name: '失敗', value: `${state.failedCount} 個`, inline: true }
-      )
-      .setTimestamp();
-
-    if (state.currentTask) {
-      embed.addFields({ name: '當前任務', value: `\`${state.currentTask.id}\` (${state.currentTask.type})` });
-    }
-
-    return embed;
   }
 
   /**
@@ -1058,32 +886,20 @@ export class DiscordClient extends Client {
         case 'session':
           await handleSessionCommand(interaction, this.sessionManager);
           break;
-        case 'project':
-          await new ProjectCommandHandler(this.projectManager).handle(interaction);
-          break;
-        case 'model':
-          await (model as any).execute(interaction as any);
-          break;
-        case 'agent':
-          await (agent as any).execute(interaction as any);
-          break;
-        case 'queue':
-          await handleQueueCommand(interaction as any);
+        case 'prompt':
+          await handlePromptCommand(interaction);
           break;
         case 'code':
-          await handleCodeCommand(interaction as any);
-          break;
-        case 'worktree':
-          await executeWorktreeCommand(interaction as any);
+          await handleCodeCommand(interaction);
           break;
         case 'permission':
-          await executePermissionCommand(interaction as any);
+          await handlePermissionCommand(interaction);
           break;
         case 'help':
-          await helpExecute(interaction as any);
+          await handleHelpCommand(interaction);
           break;
         case 'setup':
-          await handleSetupCommand(interaction as any);
+          await handleSetupCommand(interaction);
           break;
         default:
           await interaction.reply({
@@ -1119,15 +935,6 @@ export class DiscordClient extends Client {
     
     try {
       switch (commandName) {
-        case 'model':
-          await handleModelAutocomplete(interaction);
-          break;
-        case 'agent':
-          await handleAgentAutocomplete(interaction);
-          break;
-        case 'setup':
-          await handleSetupAutocomplete(interaction);
-          break;
         case 'session':
           // 處理 session start 的 model 選項自動完成
           if (subcommandName === 'start') {

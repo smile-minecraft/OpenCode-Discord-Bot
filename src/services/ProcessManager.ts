@@ -21,8 +21,8 @@ const STOP_SERVER_TIMEOUT = 5000;
 const HEALTH_CHECK_MAX_RETRIES = 5;
 /** 預設主機地址 */
 const DEFAULT_HOST = '127.0.0.1';
-/** 固定端口 - 單一伺服器架構 */
-const DEFAULT_PORT = 3000;
+/** 固定端口 - OpenCode 預設端口 4096 */
+const DEFAULT_PORT = 4096;
 
 // ============== ProcessManager 類別 ========
 
@@ -260,7 +260,7 @@ export class ProcessManager {
    */
   public async isServerRunning(port: number): Promise<boolean> {
     try {
-      const response = await fetch(`${this.getBaseUrl(port)}/health`, {
+      const response = await fetch(`${this.getBaseUrl(port)}/global/health`, {
         method: 'GET',
         signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT),
       });

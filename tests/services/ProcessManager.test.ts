@@ -82,11 +82,11 @@ describe('ProcessManager', () => {
     it('服務器運行時應該返回 true', async () => {
       mockFetchFn.mockResolvedValueOnce({ ok: true } as Response);
       
-      const result = await manager.isServerRunning(3000);
+      const result = await manager.isServerRunning(4096);
       
       expect(result).toBe(true);
       expect(mockFetchFn).toHaveBeenCalledWith(
-        'http://127.0.0.1:3000/health',
+        'http://127.0.0.1:4096/global/health',
         expect.objectContaining({ method: 'GET' })
       );
     });
@@ -94,7 +94,7 @@ describe('ProcessManager', () => {
     it('服務器未運行時應該返回 false', async () => {
       mockFetchFn.mockRejectedValueOnce(new Error('Network error'));
       
-      const result = await manager.isServerRunning(3000);
+      const result = await manager.isServerRunning(4096);
       
       expect(result).toBe(false);
     });
@@ -102,7 +102,7 @@ describe('ProcessManager', () => {
     it('服務器返回錯誤狀態時應該返回 false', async () => {
       mockFetchFn.mockResolvedValueOnce({ ok: false } as Response);
       
-      const result = await manager.isServerRunning(3000);
+      const result = await manager.isServerRunning(4096);
       
       expect(result).toBe(false);
     });
@@ -112,9 +112,9 @@ describe('ProcessManager', () => {
     it('服務器已運行時應該直接返回端口', async () => {
       mockFetchFn.mockResolvedValueOnce({ ok: true } as Response);
       
-      const port = await manager.startServer('/test/project', 3000);
+      const port = await manager.startServer('/test/project', 4096);
       
-      expect(port).toBe(3000);
+      expect(port).toBe(4096);
       expect(mockSpawnFn).not.toHaveBeenCalled();
     });
 
@@ -139,20 +139,20 @@ describe('ProcessManager', () => {
         .mockRejectedValueOnce(new Error('not running'))
         .mockResolvedValueOnce({ ok: true } as Response);
 
-      const port = await manager.startServer('/test/project', 3000);
+      const port = await manager.startServer('/test/project', 4096);
 
       expect(mockSpawnFn).toHaveBeenCalledWith(
         'opencode',
-        ['serve', '--port', '3000'],
+        ['serve', '--port', '4096'],
         expect.objectContaining({
           cwd: '/test/project',
           stdio: ['ignore', 'pipe', 'pipe'],
         })
       );
-      expect(port).toBe(3000);
+      expect(port).toBe(4096);
     });
 
-    it('固定端口 3000 應該直接使用', async () => {
+    it('默認端口 4096 應該直接使用', async () => {
       const mockProcess = {
         on: vi.fn(),
         stdout: { on: vi.fn() },
@@ -165,10 +165,10 @@ describe('ProcessManager', () => {
       mockSpawnFn.mockReturnValue(mockProcess as any);
       mockFetchFn.mockResolvedValue({ ok: true } as Response);
 
-      // 不指定端口，應該使用默認端口 3000
+      // 不指定端口，應該使用默認端口 4096
       const port = await manager.startServer('/test/project');
 
-      expect(port).toBe(3000);
+      expect(port).toBe(4096);
     });
 
     it('健康檢查超時時應該拋出錯誤', async () => {

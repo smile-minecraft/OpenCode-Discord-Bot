@@ -115,10 +115,11 @@ export const DISCORD_CONFIG = {
 
 /**
  * 功能開關配置
+ * @deprecated 已統一使用 SDK 適配器，此配置保留向後相容
  */
 export const FEATURE_FLAGS = {
-  /** 使用 SDK 適配器（而非 SSE Client） */
-  USE_SDK_ADAPTER: process.env.USE_SDK_ADAPTER === 'true',
+  /** 使用 SDK 適配器（已強制啟用） */
+  USE_SDK_ADAPTER: true,
 };
 
 export default {

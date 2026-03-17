@@ -45,6 +45,21 @@ interface ToolApprovalRecord {
 }
 
 /**
+ * 頻道綁定記錄
+ */
+interface ChannelBindingRecord {
+  channel_id: string;
+  project_id: number;
+  project_path?: string;
+  current_session_id: string | null;
+  settings: string;
+  bound_at?: number;
+  created_at?: number;
+  updated_at: number;
+  bound_by: string;
+}
+
+/**
  * Session 資料庫記錄
  */
 interface SessionRow {
@@ -1205,6 +1220,143 @@ export class SQLiteDatabase {
     if (!this.db) throw new Error('資料庫未初始化');
     this.db.exec('VACUUM');
     logger.info('[SQLiteDatabase] 資料庫已真空壓縮');
+  }
+
+  // ==================== Channel Bindings 操作 ====================
+
+  /**
+   * 獲取或創建項目（根據路徑）
+   */
+  private getOrCreateProject(projectPath: string): number {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    // 嘗試通過路徑查找項目
+    const existing = this.db.prepare('SELECT id FROM projects WHERE path = ?').get(projectPath) as { id: number } | undefined;
+
+    if (existing) {
+      return existing.id;
+    }
+
+    // 創建新項目
+    const projectId = `proj_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
+
+    this.db.prepare(`
+      INSERT INTO projects (project_id, name, path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      projectId,
+      projectPath.split('/').pop() || 'Unnamed Project', // 使用路徑的最後一部分作為名稱
+      projectPath,
+      now,
+      now
+    );
+
+    // 獲取新插入項目的 ID
+    const newProject = this.db.prepare('SELECT id FROM projects WHERE path = ?').get(projectPath) as { id: number };
+    return newProject.id;
+  }
+
+  /**
+   * 保存頻道綁定
+   */
+  saveChannelBinding(channelId: string, projectPath: string, userId: string): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const projectId = this.getOrCreateProject(projectPath);
+    const now = Date.now();
+
+    // 嘗試插入，如果衝突則忽略
+    try {
+      this.db.prepare(`
+        INSERT INTO channel_bindings (channel_id, project_id, settings, created_at, updated_at)
+        VALUES (?, ?, '{}', ?, ?)
+      `).run(channelId, projectId, now, now);
+    } catch (error) {
+      // 如果已經存在，則更新
+      this.db.prepare(`
+        UPDATE channel_bindings 
+        SET project_id = ?, updated_at = ?
+        WHERE channel_id = ?
+      `).run(projectId, now, channelId);
+    }
+
+    // 記錄綁定者
+    this.updateChannelBindingBoundBy(channelId, userId);
+  }
+
+  /**
+   * 更新綁定者信息
+   */
+  private updateChannelBindingBoundBy(channelId: string, userId: string): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const settings = this.db.prepare('SELECT settings FROM channel_bindings WHERE channel_id = ?').get(channelId) as { settings: string } | undefined;
+    if (!settings) return;
+
+    const currentSettings = JSON.parse(settings.settings || '{}');
+    currentSettings.bound_by = userId;
+
+    this.db.prepare('UPDATE channel_bindings SET settings = ? WHERE channel_id = ?')
+      .run(JSON.stringify(currentSettings), channelId);
+  }
+
+  /**
+   * 獲取頻道綁定
+   */
+  getChannelBinding(channelId: string): ChannelBindingRecord | null {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const row = this.db.prepare(`
+      SELECT cb.channel_id, cb.project_id, cb.current_session_id, cb.settings, cb.created_at, cb.updated_at,
+             p.path as project_path
+      FROM channel_bindings cb
+      JOIN projects p ON cb.project_id = p.id
+      WHERE cb.channel_id = ?
+    `).get(channelId) as (ChannelBindingRecord & { project_path: string }) | undefined;
+
+    if (!row) return null;
+
+    const settings = JSON.parse(row.settings || '{}');
+
+    return {
+      channel_id: row.channel_id,
+      project_id: row.project_id,
+      project_path: row.project_path,
+      current_session_id: row.current_session_id,
+      settings: row.settings,
+      bound_at: row.created_at,
+      updated_at: row.updated_at,
+      bound_by: settings.bound_by || 'Unknown',
+    };
+  }
+
+  /**
+   * 更新頻道綁定
+   */
+  updateChannelBinding(channelId: string, projectPath: string, userId: string): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const projectId = this.getOrCreateProject(projectPath);
+    const now = Date.now();
+
+    this.db.prepare(`
+      UPDATE channel_bindings 
+      SET project_id = ?, updated_at = ?
+      WHERE channel_id = ?
+    `).run(projectId, now, channelId);
+
+    this.updateChannelBindingBoundBy(channelId, userId);
+  }
+
+  /**
+   * 刪除頻道綁定
+   */
+  deleteChannelBinding(channelId: string): boolean {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const result = this.db.prepare('DELETE FROM channel_bindings WHERE channel_id = ?').run(channelId);
+    return result.changes > 0;
   }
 }
 

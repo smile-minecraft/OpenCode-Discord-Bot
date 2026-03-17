@@ -115,19 +115,7 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 4. 關閉 OpenCode HTTP 伺服器
-    try {
-      const { getOpenCodeClient } = await import('../services/OpenCodeClient.js');
-      const openCodeClient = getOpenCodeClient();
-      await openCodeClient.cleanupAll();
-      logger.info('[Shutdown] OpenCode servers stopped');
-    } catch (error) {
-      logger.error('[Shutdown] Error stopping OpenCode servers', {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    // 4.1 關閉 SDK Adapter
+    // 4. 關閉 SDK Adapter
     try {
       const { getOpenCodeSDKAdapter } = await import('../services/OpenCodeSDKAdapter.js');
       const sdkAdapter = getOpenCodeSDKAdapter();
@@ -139,14 +127,14 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 5. 關閉 SSE 連線
+    // 5. 關閉 Event Stream
     try {
-      const { getSSEClient } = await import('../services/SSEClient.js');
-      const sseClient = getSSEClient();
-      sseClient.disconnect();
-      logger.info('[Shutdown] SSE connections closed');
+      const { getEventStreamAdapter } = await import('../services/EventStreamFactory.js');
+      const eventStreamAdapter = getEventStreamAdapter();
+      eventStreamAdapter.disconnect();
+      logger.info('[Shutdown] Event stream connections closed');
     } catch (error) {
-      logger.error('[Shutdown] Error closing SSE connections', {
+      logger.error('[Shutdown] Error closing event stream connections', {
         error: error instanceof Error ? error.message : String(error),
       });
     }

@@ -13,7 +13,7 @@ import { TIMEOUTS } from '../config/constants.js';
 // ============== 常量 ==============
 
 /** 預設端口 */
-const DEFAULT_PORT = 3000;
+const DEFAULT_PORT = 4096;
 /** 健康檢查超時（毫秒） */
 const HEALTH_CHECK_TIMEOUT = 2000;
 /** 健康檢查最大重試次數 */

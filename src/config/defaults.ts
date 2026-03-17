@@ -19,9 +19,9 @@ export const DEFAULTS = {
    */
   OPENCODE_SERVER: {
     /** 伺服器端口 */
-    PORT: 3000,
+    PORT: 4096,
     /** 伺服器 URL */
-    URL: 'http://127.0.0.1:3000',
+    URL: 'http://127.0.0.1:4096',
   },
 
   /**

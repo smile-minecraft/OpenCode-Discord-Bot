@@ -1,10 +1,8 @@
 /**
  * Session 管理服務
- * @description 管理 OpenCode Session 生命週期，使用本地 OpenCode 伺服器
+ * @description 管理 OpenCode Session 生命週期，使用 OpenCode SDK
  * 
- * 支援兩種適配器:
- * - 舊版 OpenCodeClient (預設)
- * - 新版 OpenCodeSDKAdapter (當 FEATURE_FLAGS.USE_SDK_ADAPTER=true 時使用)
+ * 使用新版 OpenCodeSDKAdapter (基於 @opencode-ai/sdk)
  */
 
 import path from 'path';
@@ -13,11 +11,8 @@ import { Session, SessionStatus, SessionMetadata } from '../database/models/Sess
 import { v4 as uuidv4 } from 'uuid';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import logger from '../utils/logger.js';
-import { MODEL_CONFIG, FEATURE_FLAGS } from '../config/constants.js';
+import { MODEL_CONFIG } from '../config/constants.js';
 import { getOpenCodeServerManager, OpenCodeServerManager } from './OpenCodeServerManager.js';
-
-// 導入舊版和新版適配器
-import { OpenCodeClient as LegacyOpenCodeClient, getOpenCodeClient as getLegacyOpenCodeClient } from './deprecated/OpenCodeClient.js';
 import { getOpenCodeSDKAdapter, OpenCodeSDKAdapter } from './OpenCodeSDKAdapter.js';
 
 // ============== 類型定義 ==============
@@ -58,7 +53,7 @@ export interface SessionExecutionResult {
 
   /**
    * Session 管理器類
-   * @description 負責管理 OpenCode Session 的生命週期，使用本地 OpenCode 伺服器
+   * @description 負責管理 OpenCode Session 的生命週期，使用 OpenCode SDK
    */
   export class SessionManager {
     /** 活躍的 Session 映射 */
@@ -70,13 +65,8 @@ export interface SessionExecutionResult {
     /** 清理定時器 */
     private cleanupInterval: NodeJS.Timeout | null = null;
     
-    // 根據 Feature Flag 選擇適配器
-    /** 舊版 OpenCode Client（當 USE_SDK_ADAPTER=false 時使用） */
-    private legacyClient!: LegacyOpenCodeClient;
-    /** 新版 SDK Adapter（當 USE_SDK_ADAPTER=true 時使用） */
-    private sdkAdapter!: OpenCodeSDKAdapter;
-    /** 當前是否使用 SDK Adapter */
-    private readonly useSDKAdapter: boolean;
+    /** SDK Adapter */
+    private sdkAdapter: OpenCodeSDKAdapter;
     /** 預設模型 */
     private readonly defaultModel = MODEL_CONFIG.DEFAULT;
     /** 預設 Agent */
@@ -90,17 +80,9 @@ export interface SessionExecutionResult {
     constructor() {
       this.sqliteDb = SQLiteDatabase.getInstance();
       this.serverManager = getOpenCodeServerManager();
+      this.sdkAdapter = getOpenCodeSDKAdapter();
       
-      // 根據 Feature Flag 選擇適配器
-      this.useSDKAdapter = FEATURE_FLAGS.USE_SDK_ADAPTER;
-      
-      if (this.useSDKAdapter) {
-        this.sdkAdapter = getOpenCodeSDKAdapter();
-        logger.info('[SessionManager] 使用 SDK Adapter (USE_SDK_ADAPTER=true)');
-      } else {
-        this.legacyClient = getLegacyOpenCodeClient();
-        logger.info('[SessionManager] 使用舊版 Client (USE_SDK_ADAPTER=false)');
-      }
+      logger.info('[SessionManager] 使用 SDK Adapter');
 
       // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
       // 這裡只檢查狀態，不負責初始化
@@ -167,24 +149,31 @@ export interface SessionExecutionResult {
         }
       }
 
-      // 2. 創建 Session
-      const openCodeSessionInfo = await this.doCreateSession(port, {
-        model: session.model,
-        agent: session.agent,
-        projectPath: session.projectPath,
-        initialPrompt: session.prompt,
+      // 1.5 確保 SDK Adapter 已初始化
+      if (!this.sdkAdapter.isInitialized()) {
+        await this.sdkAdapter.initialize({
+          projectPath: session.projectPath,
+          port: port,
+        });
+        logger.info('[SessionManager] SDK Adapter 已初始化');
+      }
+
+      // 2. 創建 Session (使用 SDK Adapter)
+      const openCodeSession = await this.sdkAdapter.createSession({
+        directory: session.projectPath,
+        title: session.prompt ? session.prompt.substring(0, 50) : undefined,
       });
 
       // 3. 更新 Session 資訊
-      session.opencodeSessionId = openCodeSessionInfo.id;
-      (session.metadata as SessionMetadata & { opencodeSessionId?: string }).opencodeSessionId = openCodeSessionInfo.id;
+      session.opencodeSessionId = openCodeSession.id;
+      (session.metadata as SessionMetadata & { opencodeSessionId?: string }).opencodeSessionId = openCodeSession.id;
       (session.metadata as SessionMetadata & { port?: number }).port = port;
       session.markRunning();
 
       // 4. 保存到資料庫
       await this.saveSession(session);
 
-      logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSessionInfo.id}, Port: ${port}`);
+      logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSession.id}, Port: ${port}`);
     } catch (error) {
       logger.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
       
@@ -381,6 +370,37 @@ export interface SessionExecutionResult {
     }
   }
 
+  /**
+   * 發送提示到 Session
+   * @param sessionId Session ID
+   * @param prompt 提示內容
+   */
+  async sendPrompt(sessionId: string, prompt: string): Promise<void> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} 不存在`);
+    }
+    if (!session.isRunning()) {
+      throw new Error(`Session ${sessionId} 未運行`);
+    }
+
+    const opencodeSessionId = session.opencodeSessionId;
+
+    if (!opencodeSessionId) {
+      throw new Error('Session 資訊不完整');
+    }
+
+    try {
+      await this.sdkAdapter.sendPrompt({
+        sessionId: opencodeSessionId,
+        prompt,
+      });
+      session.updateActivity();
+    } catch (error) {
+      throw error;
+    }
+  }
+
   // ============== 私有方法 ==============
 
   /**
@@ -397,80 +417,6 @@ export interface SessionExecutionResult {
     // 使用可配置的專案根目錄，優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
     const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
     return path.join(projectsRoot, channelId);
-  }
-
-  // ============== SDK Adapter 橋接方法 ==============
-
-  /**
-   * 創建 Session（內部方法）
-   * @param port 端口號
-   * @param options Session 創建選項
-   * @returns Session 資訊
-   */
-  private async doCreateSession(
-    port: number,
-    options: {
-      model: string;
-      agent: string;
-      projectPath: string;
-      initialPrompt?: string;
-    }
-  ): Promise<{ id: string }> {
-    if (this.useSDKAdapter) {
-      const session = await this.sdkAdapter.createSession({
-        directory: options.projectPath,
-        title: options.initialPrompt ? options.initialPrompt.substring(0, 50) : undefined,
-      });
-      return { id: session.id };
-    } else {
-      return this.legacyClient.createSession(port, options);
-    }
-  }
-
-  /**
-   * 發送提示到 Session（內部方法）
-   * @param port 端口號
-   * @param sessionId Session ID
-   * @param prompt 提示內容
-   */
-  private async doSendPrompt(port: number, sessionId: string, prompt: string): Promise<void> {
-    if (this.useSDKAdapter) {
-      await this.sdkAdapter.sendPrompt({
-        sessionId,
-        prompt,
-      });
-    } else {
-      await this.legacyClient.sendPrompt(port, sessionId, prompt);
-    }
-  }
-
-  /**
-   * 發送提示到 Session
-   * @param sessionId Session ID
-   * @param prompt 提示內容
-   */
-  async sendPrompt(sessionId: string, prompt: string): Promise<void> {
-    const session = this.activeSessions.get(sessionId);
-    if (!session) {
-      throw new Error(`Session ${sessionId} 不存在`);
-    }
-    if (!session.isRunning()) {
-      throw new Error(`Session ${sessionId} 未運行`);
-    }
-
-    const opencodeSessionId = session.opencodeSessionId;
-    const port = (session.metadata as SessionMetadata & { port?: number })?.port;
-
-    if (!opencodeSessionId || !port) {
-      throw new Error('Session 資訊不完整');
-    }
-
-    try {
-      await this.doSendPrompt(port, opencodeSessionId, prompt);
-      session.updateActivity();
-    } catch (error) {
-      throw error;
-    }
   }
 
   /**
