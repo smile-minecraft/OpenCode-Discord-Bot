@@ -304,7 +304,7 @@ export function createSessionManagementRow(sessionId: string): ActionRowBuilder<
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     SessionButtonFactory.createStatusButton(`session:status:${sessionId}`),
     SessionButtonFactory.createSettingsButton(`session:settings:${sessionId}`),
-    SessionButtonFactory.createDeleteButton(`session:stop:${sessionId}`),
+    SessionButtonFactory.createDeleteButton(`session:delete:${sessionId}`),
   );
 }
 

@@ -7,6 +7,7 @@
 
 import path from 'path';
 import os from 'os';
+import { Database } from '../database/index.js';
 import { Session, SessionStatus, SessionMetadata } from '../database/models/Session.js';
 import { v4 as uuidv4 } from 'uuid';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
@@ -83,8 +84,6 @@ export interface ClearSessionsResult {
   private sessionEventManager: SessionEventManager;
   /** 預設模型 */
   private readonly defaultModel = MODEL_CONFIG.DEFAULT;
-    /** 預設 Agent */
-    private readonly defaultAgent = 'general';
     /** OpenCode 伺服器管理器 */
     private readonly serverManager: OpenCodeServerManager;
 
@@ -125,6 +124,7 @@ export interface ClearSessionsResult {
    */
   async createSession(options: CreateSessionOptions): Promise<Session> {
     const sessionId = this.generateSessionId();
+    const resolvedAgent = options.agent?.trim() || await this.getDefaultAgentForGuild(options.guildId);
 
     // 創建 Session 實例
     const session = new Session({
@@ -134,7 +134,7 @@ export interface ClearSessionsResult {
       status: 'pending',
       prompt: options.prompt,
       model: options.model || this.defaultModel,
-      agent: options.agent || this.defaultAgent,
+      agent: resolvedAgent,
       projectPath: options.projectPath || this.getDefaultProjectPath(options.channelId),
     });
 
@@ -877,6 +877,29 @@ export interface ClearSessionsResult {
     // 優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
     const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
     return path.join(projectsRoot, channelId);
+  }
+
+  /**
+   * 獲取伺服器預設 Agent
+   * @description 優先使用 guild settings 的 defaultAgent，無法取得時才 fallback。
+   */
+  private async getDefaultAgentForGuild(guildId: string): Promise<string> {
+    try {
+      const db = Database.getInstance();
+      const guild = await db.getGuild(guildId);
+      const defaultAgent = guild?.settings?.defaultAgent?.trim();
+      if (defaultAgent) {
+        return defaultAgent;
+      }
+    } catch (error) {
+      logger.warn('[SessionManager] 讀取 guild 預設 Agent 失敗，將使用 fallback', {
+        guildId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 保底 fallback（僅在 guild 設定不存在或讀取失敗時使用）
+    return 'general';
   }
 
   /**

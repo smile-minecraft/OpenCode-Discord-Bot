@@ -1238,7 +1238,7 @@ export class DiscordClient extends Client {
               await handleSessionModelAutocomplete(interaction);
               return;
             }
-            if (subcommandName === 'settings' && focusedOption.name === 'agent') {
+            if ((subcommandName === 'start' || subcommandName === 'settings') && focusedOption.name === 'agent') {
               await handleSessionAgentAutocomplete(interaction);
               return;
             }

@@ -72,6 +72,13 @@ function createStartSubcommand(): SlashCommandSubcommandBuilder {
         .setDescription('使用的 AI 模型')
         .setRequired(false)
         .setAutocomplete(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('agent')
+        .setDescription('使用的主代理（不填則使用伺服器預設 Agent）')
+        .setRequired(false)
+        .setAutocomplete(true)
     );
 }
 
@@ -302,6 +309,7 @@ async function handleStartCommand(
 
   const prompt = interaction.options.getString('prompt') || '';
   const model = interaction.options.getString('model') || MODEL_CONFIG.DEFAULT;
+  const agent = interaction.options.getString('agent') || undefined;
   const channelId = interaction.channelId;
   const userId = interaction.user.id;
   const guildId = interaction.guildId;
@@ -331,6 +339,7 @@ async function handleStartCommand(
       userId,
       prompt,
       model,
+      agent,
     });
 
     // ===== Phase 1: 創建 Thread 並绑定到 Session =====

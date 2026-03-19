@@ -407,7 +407,7 @@ describe('registerSessionButtonHandlers() - 註冊函數', () => {
 
     const configs = (mockButtonHandler.registerMany as any).mock.calls[0][0];
     
-    // 根據 getHandlerConfigs 的實現，應該有 12 個配置
+    // 根據 getHandlerConfigs 的實現，應該有 13 個配置
     // - session:start (exact)
     // - session:start: (prefix)
     // - session:stop (exact)
@@ -420,7 +420,7 @@ describe('registerSessionButtonHandlers() - 註冊函數', () => {
     // - session:status: (prefix)
     // - session:passthrough:toggle (exact)
     // - session:passthrough:toggle: (prefix)
-    expect(configs.length).toBe(12);
+    expect(configs.length).toBe(13);
   });
 
   it('每個配置應該有正確的 callback 函數', () => {

@@ -26,6 +26,9 @@ import {
 } from '../builders/SessionActionRowBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import { getAvailableAgents } from '../services/AgentService.js';
+import { getSessionEventManager } from '../services/SessionEventManager.js';
+import { getStreamingMessageManager, type SSEEventEmitterAdapter } from '../services/StreamingMessageManager.js';
+import { getOpenCodeSDKAdapter } from '../services/OpenCodeSDKAdapter.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -56,7 +59,12 @@ export class SessionButtonHandler {
       {
         customId: 'session:stop:',
         callback: this.handleStopWithId.bind(this),
-        description: '結束並刪除 Session（帶 Session ID）',
+        description: '中斷當前請求（帶 Session ID）',
+      },
+      {
+        customId: 'session:delete:',
+        callback: this.handleDeleteWithId.bind(this),
+        description: '刪除 Session（帶 Session ID）',
       },
       {
         customId: 'session:pause:',
@@ -191,10 +199,10 @@ export class SessionButtonHandler {
   }
 
   /**
-   * 停止按鈕（兼容舊 customId）：等同刪除 Session
+   * 停止按鈕（帶 Session ID）：中斷當前推理，保留 Session
    */
   async handleStopWithId(interaction: ButtonInteraction): Promise<void> {
-    await this.handleDeleteWithId(interaction);
+    await this.handlePauseWithId(interaction);
   }
 
   /**
@@ -300,15 +308,41 @@ export class SessionButtonHandler {
         return;
       }
 
+      const streamChannelId = resumed.threadId || interaction.channelId;
+      const sdkAdapter = getOpenCodeSDKAdapter();
+      const port = sdkAdapter.getPort();
+      if (!port) {
+        throw new Error('OpenCode 串流未就緒，無法繼續 Session');
+      }
+
+      const sessionEventManager = getSessionEventManager();
+      let adapter = sessionEventManager.getSubscription(sessionId)?.adapter as SSEEventEmitterAdapter | undefined;
+      if (!adapter) {
+        adapter = await sessionEventManager.subscribe(sessionId) as SSEEventEmitterAdapter;
+      }
+
+      const streamingManager = getStreamingMessageManager();
+      let streamingStarted = false;
+      try {
+        streamingManager.startStreaming(resumed, streamChannelId, port, adapter);
+        streamingStarted = true;
+        await this.sessionManager.sendPrompt(sessionId, 'continue');
+      } catch (error) {
+        if (streamingStarted) {
+          streamingManager.removeStream(sessionId, streamChannelId);
+        }
+        throw error;
+      }
+
       await this.updateControlMessage(interaction, resumed, {
-        note: 'Session 已恢復',
+        note: 'Session 已恢復並已送出 continue',
       });
       await this.updateMainStatusMessage(interaction, resumed, {
-        note: 'Session 已恢復',
+        note: 'Session 已恢復（continue）',
       });
 
       await interaction.editReply({
-        content: `✅ Session \`${sessionId}\` 已恢復`,
+        content: `✅ Session \`${sessionId}\` 已恢復，並已送出 \`continue\``,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知錯誤';
