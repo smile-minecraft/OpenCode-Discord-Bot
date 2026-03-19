@@ -25,7 +25,7 @@ import {
   createSessionManagementRow,
 } from '../builders/SessionActionRowBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
-import { AGENTS } from '../models/AgentData.js';
+import { getAvailableAgents } from '../services/AgentService.js';
 import logger from '../utils/logger.js';
 
 /**
@@ -435,13 +435,7 @@ export class SessionButtonHandler {
     }
 
     const modelOptions = await this.getModelOptions(interaction);
-    const agentOptions = AGENTS.map((agent) =>
-      new StringSelectMenuOptionBuilder()
-        .setLabel(agent.name.substring(0, 100))
-        .setValue(agent.id)
-        .setDescription(agent.description.substring(0, 100))
-        .setDefault(agent.id === session.agent)
-    );
+    const agentOptions = await this.getAgentOptions(session.projectPath, session.agent);
 
     const modelSelect = new StringSelectMenuBuilder()
       .setCustomId(`session:settings:model:${sessionId}`)
@@ -669,6 +663,38 @@ export class SessionButtonHandler {
         .setValue(model.id)
         .setDescription(`${provider} • ${model.id}`.substring(0, 100));
     });
+  }
+
+  /**
+   * 構建 Agent 選項（最多 25 個）
+   */
+  private async getAgentOptions(
+    projectPath: string,
+    currentAgentId: string
+  ): Promise<StringSelectMenuOptionBuilder[]> {
+    const agents = await getAvailableAgents({
+      projectPath,
+      useCache: true,
+      allowFallback: true,
+    });
+
+    if (agents.length === 0) {
+      return [
+        new StringSelectMenuOptionBuilder()
+          .setLabel('沒有可用 Agent')
+          .setDescription('請檢查 OpenCode Agent 設定')
+          .setValue('general')
+          .setDefault(currentAgentId === 'general'),
+      ];
+    }
+
+    return agents.slice(0, 25).map((agent) =>
+      new StringSelectMenuOptionBuilder()
+        .setLabel(agent.name.substring(0, 100))
+        .setValue(agent.id)
+        .setDescription((agent.description || 'OpenCode Agent').substring(0, 100))
+        .setDefault(agent.id === currentAgentId)
+    );
   }
 }
 

@@ -45,11 +45,16 @@ import { log as logger } from '../utils/logger.js';
 import { isButtonAllowed } from '../utils/RateLimiter.js';
 
 // 服務
-import { getSessionManager, getOpenCodeSDKAdapter } from '../services/index.js';
+import { getSessionManager, getOpenCodeSDKAdapter, getThreadManager } from '../services/index.js';
 import { getProjectManager } from '../services/index.js';
 
 // Commands
-import { createSessionCommand, handleSessionCommand, handleSessionModelAutocomplete } from '../commands/session.js';
+import {
+  createSessionCommand,
+  handleSessionCommand,
+  handleSessionModelAutocomplete,
+  handleSessionAgentAutocomplete,
+} from '../commands/session.js';
 import { command as promptCommand, execute as handlePromptCommand } from '../commands/prompt.js';
 import { codeCommand, handleCodeCommand } from '../commands/code.js';
 import { permissionCommand, executePermissionCommand as handlePermissionCommand } from '../commands/permission.js';
@@ -60,7 +65,7 @@ import { createProjectCommand, ProjectCommandHandler } from '../commands/project
 // Models data
 import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
 import { getModelsByProviderDynamic } from '../services/ModelService.js';
-import { AGENTS } from '../models/AgentData.js';
+import { getAvailableAgents } from '../services/AgentService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import { createSessionManagementRow } from '../builders/SessionActionRowBuilder.js';
@@ -339,6 +344,15 @@ export class DiscordClient extends Client {
       logger.info('[Client] StreamingMessageManager Discord Client 已設置');
     } catch (error) {
       logger.error('[Client] 設置 StreamingMessageManager Discord Client 失敗', error as Error);
+    }
+
+    // 設置 ThreadManager 的 Discord Client（確保刪除 thread 時可實際呼叫 Discord API）
+    try {
+      const threadManager = getThreadManager();
+      threadManager.setDiscordClient(this);
+      logger.info('[Client] ThreadManager Discord Client 已設置');
+    } catch (error) {
+      logger.error('[Client] 設置 ThreadManager Discord Client 失敗', error as Error);
     }
 
     // 註冊所有 handlers
@@ -742,30 +756,20 @@ export class DiscordClient extends Client {
       callback: async (interaction) => {
         const agentId = interaction.values[0];
         // 顯示 Agent 詳細資訊
-        const agent = AGENTS.find(a => a.id === agentId);
+        const agents = await getAvailableAgents({ useCache: true, allowFallback: true });
+        const agent = agents.find((a) => a.id === agentId);
         const embed = new EmbedBuilder()
           .setTitle(`🧠 ${agent?.name || agentId}`)
           .setDescription(agent?.description || '無描述');
         
         if (agent) {
           embed.addFields(
-            { name: '類型', value: agent.type, inline: true },
+            { name: '來源', value: agent.source, inline: true },
             { name: '預設模型', value: agent.defaultModel || '無', inline: true }
           );
-          
-          if (agent.capabilities.length > 0) {
-            embed.addFields({ name: '能力', value: agent.capabilities.join(', ') });
-          }
-          
-          const featureList = [];
-          if (agent.features.tools) featureList.push('工具使用');
-          if (agent.features.codeExecution) featureList.push('代碼執行');
-          if (agent.features.fileOperations) featureList.push('檔案操作');
-          if (agent.features.webSearch) featureList.push('網路搜尋');
-          if (agent.features.conversationHistory) featureList.push('對話歷史');
-          
-          if (featureList.length > 0) {
-            embed.addFields({ name: '特性', value: featureList.join(', ') });
+
+          if (agent.mode) {
+            embed.addFields({ name: '模式', value: agent.mode, inline: true });
           }
         }
         
@@ -1232,6 +1236,10 @@ export class DiscordClient extends Client {
             // session start/settings 都支援 model autocomplete
             if ((subcommandName === 'start' || subcommandName === 'settings') && focusedOption.name === 'model') {
               await handleSessionModelAutocomplete(interaction);
+              return;
+            }
+            if (subcommandName === 'settings' && focusedOption.name === 'agent') {
+              await handleSessionAgentAutocomplete(interaction);
               return;
             }
           }

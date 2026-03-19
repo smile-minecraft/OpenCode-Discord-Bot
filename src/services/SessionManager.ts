@@ -54,6 +54,13 @@ export interface SessionExecutionResult {
   error?: string;
 }
 
+export interface ClearSessionsResult {
+  totalSessions: number;
+  deletedSessions: number;
+  deletedThreads: number;
+  failed: number;
+}
+
 // ============== Session 管理器 ==============
 
   /**
@@ -451,7 +458,18 @@ export interface SessionExecutionResult {
       const threadManager = getThreadManager();
       if (threadManager.isReady()) {
         if (deleteThread) {
-          await threadManager.deleteSessionThread(sessionId);
+          const fallbackThreadId = session.threadId;
+          if (fallbackThreadId) {
+            try {
+              await threadManager.deleteDiscordThread(fallbackThreadId);
+            } finally {
+              // 優先用 threadId/sessionId 雙路清理映射，避免映射缺失導致殘留
+              threadManager.deleteThread(fallbackThreadId);
+              threadManager.deleteThread(sessionId);
+            }
+          } else {
+            await threadManager.deleteSessionThread(sessionId);
+          }
           session.threadId = null;
         } else {
           await threadManager.cleanupSession(sessionId);
@@ -482,6 +500,83 @@ export interface SessionExecutionResult {
     }
 
     return session;
+  }
+
+  /**
+   * 清除所有 Session 與關聯討論串
+   */
+  async clearAllSessions(
+    options: {
+      deleteThreads?: boolean;
+    } = {}
+  ): Promise<ClearSessionsResult> {
+    const { deleteThreads = true } = options;
+    const targets = new Map<string, Session>();
+
+    // 1) 記憶體中的 active sessions
+    for (const [sessionId, session] of this.activeSessions.entries()) {
+      targets.set(sessionId, session);
+    }
+
+    // 2) 資料庫中的 sessions（補齊非 active）
+    if (this.sqliteDb.isReady()) {
+      try {
+        const persisted = this.sqliteDb.loadAllSessions();
+        for (const session of persisted) {
+          targets.set(session.sessionId, session);
+        }
+      } catch (error) {
+        logger.warn('[SessionManager] clearAllSessions 載入資料庫 Session 失敗', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let deletedSessions = 0;
+    let failed = 0;
+
+    for (const sessionId of targets.keys()) {
+      try {
+        const deleted = await this.terminateAndDeleteSession(sessionId, {
+          deleteThread: deleteThreads,
+        });
+        if (deleted) {
+          deletedSessions++;
+        }
+      } catch (error) {
+        failed++;
+        logger.warn(`[SessionManager] clearAllSessions 刪除 Session 失敗: ${sessionId}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let deletedThreads = 0;
+    // 最後再做一次 thread 殘留清理（只在 deleteThreads=true）
+    if (deleteThreads) {
+      try {
+        const threadManager = getThreadManager();
+        if (threadManager.isReady()) {
+          const threadResult = await threadManager.clearAllSessionThreads();
+          deletedThreads = threadResult.deleted;
+          failed += threadResult.failed;
+        }
+      } catch (error) {
+        logger.warn('[SessionManager] clearAllSessions 清理殘留討論串失敗', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // 清理索引（保險）
+    this.channelSessions.clear();
+
+    return {
+      totalSessions: targets.size,
+      deletedSessions,
+      deletedThreads,
+      failed,
+    };
   }
 
   /**

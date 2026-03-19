@@ -834,6 +834,41 @@ export class ThreadManager {
   }
 
   /**
+   * 刪除所有 Session 關聯討論串（Discord + 映射）
+   */
+  async clearAllSessionThreads(): Promise<{
+    total: number;
+    deleted: number;
+    failed: number;
+  }> {
+    const entries = Array.from(this.sessionToThread.entries());
+    let deleted = 0;
+    let failed = 0;
+
+    for (const [sessionId, threadId] of entries) {
+      try {
+        await this.deleteDiscordThread(threadId);
+        deleted++;
+      } catch (error) {
+        failed++;
+        logger.warn(`[ThreadManager] 批次刪除 thread 失敗: ${threadId}`, {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        // 無論 Discord API 是否成功，映射都要清除，避免殘留髒資料
+        this.deleteThread(sessionId);
+      }
+    }
+
+    return {
+      total: entries.length,
+      deleted,
+      failed,
+    };
+  }
+
+  /**
    * 獲取統計資訊
    */
   getStats(): {

@@ -685,13 +685,49 @@ export class StreamingMessageManager {
     }
 
     if (data.content && data.content.trim() !== '') {
-      stream.content += data.content;
+      stream.content = this.mergeIncomingContent(stream.content, data.content);
       this.refreshStreamTimeout(stream);
     }
 
     if (data.isComplete !== undefined) {
       stream.isComplete = data.isComplete;
     }
+  }
+
+  /**
+   * 合併串流內容（同時兼容「完整快照」與「增量片段」）
+   * @description 避免 message.updated 反覆回傳完整內容時造成重覆拼接與 Markdown 黏連。
+   */
+  private mergeIncomingContent(currentContent: string, incomingContent: string): string {
+    if (!incomingContent) {
+      return currentContent;
+    }
+
+    if (!currentContent) {
+      return incomingContent;
+    }
+
+    // 完全重複
+    if (incomingContent === currentContent) {
+      return currentContent;
+    }
+
+    // incoming 是完整快照（比 current 長，且以 current 為前綴）
+    if (incomingContent.startsWith(currentContent)) {
+      return incomingContent;
+    }
+
+    // incoming 是舊快照（比 current 短，或 current 已包含）
+    if (currentContent.startsWith(incomingContent) || currentContent.includes(incomingContent)) {
+      return currentContent;
+    }
+
+    // 一般增量片段 append，並在 Markdown 標題前補換行，避免出現 "文字## 標題"
+    if (/^\s*#{1,6}\s+\S+/.test(incomingContent) && !currentContent.endsWith('\n')) {
+      return `${currentContent}\n${incomingContent}`;
+    }
+
+    return `${currentContent}${incomingContent}`;
   }
 
   /**

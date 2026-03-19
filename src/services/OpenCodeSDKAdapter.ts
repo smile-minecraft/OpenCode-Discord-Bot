@@ -134,6 +134,24 @@ export interface SDKProviderInfo {
   models: SDKModelInfo[];
 }
 
+/**
+ * Agent 資訊（來自 SDK）
+ */
+export interface SDKAgentInfo {
+  /** Agent ID（以 SDK 名稱作為唯一鍵） */
+  id: string;
+  /** 顯示名稱 */
+  name: string;
+  /** 描述 */
+  description: string;
+  /** 模式 */
+  mode?: string;
+  /** 是否為內建 agent */
+  builtIn?: boolean;
+  /** 預設模型（provider/model） */
+  defaultModel?: string;
+}
+
 // ============== OpenCodeSDKAdapter 類別 =============
 
 /**
@@ -621,6 +639,65 @@ export class OpenCodeSDKAdapter {
     } catch (error) {
       logger.error('[OpenCodeSDKAdapter] 获取 providers 失败:', error);
       throw this.mapSDKError(error, '获取 Provider 列表失败');
+    }
+  }
+
+  /**
+   * 取得可用 Agent 清單
+   * @param directory 專案路徑（可選）
+   * @returns Agent 清單
+   * @throws {SDKAdapterError} 取得失敗
+   */
+  public async getAgents(directory?: string): Promise<SDKAgentInfo[]> {
+    const client = this.getClient();
+
+    try {
+      const response = await client.app.agents({
+        query: directory ? { directory } : undefined,
+      });
+
+      const rawAgents = (response as { data?: unknown }).data;
+      if (!Array.isArray(rawAgents)) {
+        return [];
+      }
+
+      const agents: SDKAgentInfo[] = [];
+      for (const rawAgent of rawAgents) {
+        if (!rawAgent || typeof rawAgent !== 'object') {
+          continue;
+        }
+
+        const agent = rawAgent as Record<string, unknown>;
+        const name = typeof agent.name === 'string' ? agent.name.trim() : '';
+        if (!name) {
+          continue;
+        }
+
+        const description = typeof agent.description === 'string'
+          ? agent.description
+          : 'OpenCode Agent';
+
+        const model = agent.model && typeof agent.model === 'object'
+          ? (agent.model as Record<string, unknown>)
+          : null;
+        const providerID = typeof model?.providerID === 'string' ? model.providerID : '';
+        const modelID = typeof model?.modelID === 'string' ? model.modelID : '';
+        const defaultModel = providerID && modelID ? `${providerID}/${modelID}` : undefined;
+
+        agents.push({
+          id: name,
+          name,
+          description,
+          mode: typeof agent.mode === 'string' ? agent.mode : undefined,
+          builtIn: typeof agent.builtIn === 'boolean' ? agent.builtIn : undefined,
+          defaultModel,
+        });
+      }
+
+      return agents;
+    } catch (error) {
+      logger.error('[OpenCodeSDKAdapter] 获取 agents 失败:', error);
+      throw this.mapSDKError(error, '获取 Agent 列表失败');
     }
   }
 

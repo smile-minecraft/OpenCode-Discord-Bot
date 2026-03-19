@@ -8,6 +8,7 @@
  * - /session resume - 恢復 Session
  * - /session abort - 終止 Session
  * - /session settings - 更新 Session 模型/Agent
+ * - /session clear - 清除所有 Session 與討論串
  */
 
 import {
@@ -29,7 +30,7 @@ import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import { createSessionActionRow, createSessionManagementRow } from '../builders/SessionActionRowBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import type { ModelDefinition } from '../models/ModelData.js';
-import { AGENTS } from '../models/AgentData.js';
+import { getAvailableAgents } from '../services/AgentService.js';
 import type { Session } from '../database/models/Session.js';
 import { MODEL_CONFIG } from '../config/constants.js';
 import { captureCommandError } from '../utils/sentryHelper.js';
@@ -48,7 +49,8 @@ export function createSessionCommand(): SlashCommandBuilder {
     .addSubcommand(createListSubcommand())
     .addSubcommand(createResumeSubcommand())
     .addSubcommand(createAbortSubcommand())
-    .addSubcommand(createSettingsSubcommand()) as SlashCommandBuilder;
+    .addSubcommand(createSettingsSubcommand())
+    .addSubcommand(createClearSubcommand()) as SlashCommandBuilder;
 }
 
 /**
@@ -149,8 +151,17 @@ function createSettingsSubcommand(): SlashCommandSubcommandBuilder {
         .setName('agent')
         .setDescription('設定 Agent')
         .setRequired(false)
-        .addChoices(...AGENTS.map((agent) => ({ name: `${agent.name} (${agent.id})`, value: agent.id })))
+        .setAutocomplete(true)
     );
+}
+
+/**
+ * 創建 clear 子命令
+ */
+function createClearSubcommand(): SlashCommandSubcommandBuilder {
+  return new SlashCommandSubcommandBuilder()
+    .setName('clear')
+    .setDescription('清除所有 Session 與關聯討論串（高風險操作）');
 }
 
 // ============== Autocomplete 處理 ==============
@@ -202,6 +213,38 @@ export async function handleSessionModelAutocomplete(
   }
 }
 
+/**
+ * 處理 session settings 命令的 agent 選項自動完成
+ */
+export async function handleSessionAgentAutocomplete(
+  interaction: AutocompleteInteraction
+): Promise<void> {
+  const focusedValue = interaction.options.getFocused().toLowerCase();
+
+  try {
+    const agents = await getAvailableAgents({ useCache: true, allowFallback: true });
+    const filtered = agents
+      .filter((agent) =>
+        agent.id.toLowerCase().includes(focusedValue)
+        || agent.name.toLowerCase().includes(focusedValue)
+        || agent.description.toLowerCase().includes(focusedValue)
+      )
+      .slice(0, 25);
+
+    await interaction.respond(
+      filtered.map((agent) => ({
+        name: `${agent.name} (${agent.id})`.slice(0, 100),
+        value: agent.id,
+      }))
+    );
+  } catch (error) {
+    logger.warn('[SessionCommand] Agent autocomplete 失敗', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await interaction.respond([]);
+  }
+}
+
 // ============== 指令處理 ==============
 
 /**
@@ -236,6 +279,9 @@ export async function handleSessionCommand(
       break;
     case 'settings':
       await handleSettingsCommand(interaction, sessionManager);
+      break;
+    case 'clear':
+      await handleClearCommand(interaction, sessionManager);
       break;
     default:
       await interaction.reply({
@@ -626,6 +672,47 @@ async function handleSettingsCommand(
 }
 
 /**
+ * 處理 clear 子命令
+ */
+async function handleClearCommand(
+  interaction: ChatInputCommandInteraction,
+  sessionManager: SessionManager
+): Promise<void> {
+  await interaction.deferReply({
+    flags: [MessageFlags.Ephemeral],
+  });
+
+  // clear 屬於高風險操作，額外要求管理員權限
+  if (!interaction.memberPermissions?.has('Administrator')) {
+    await interaction.editReply({
+      content: '❌ `/session clear` 需要伺服器管理員權限',
+    });
+    return;
+  }
+
+  try {
+    const result = await sessionManager.clearAllSessions({
+      deleteThreads: true,
+    });
+
+    await interaction.editReply({
+      content: [
+        '🧹 Session 全清完成',
+        `已處理 Session：${result.totalSessions}`,
+        `已刪除 Session：${result.deletedSessions}`,
+        `已刪除討論串：${result.deletedThreads}`,
+        `失敗數：${result.failed}`,
+      ].join('\n'),
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+    await interaction.editReply({
+      content: `❌ 清除 Session 失敗: ${errorMessage}`,
+    });
+  }
+}
+
+/**
  * 更新主頻道 Session 狀態訊息
  */
 async function refreshSessionStatusMessage(
@@ -673,4 +760,5 @@ export default {
   createSessionCommand,
   handleSessionCommand,
   handleSessionModelAutocomplete,
+  handleSessionAgentAutocomplete,
 };

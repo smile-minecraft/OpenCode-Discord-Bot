@@ -736,6 +736,31 @@ export class SQLiteDatabase {
   }
 
   /**
+   * 載入所有 Sessions
+   */
+  loadAllSessions(): Session[] {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const rows = this.db.prepare(`
+      SELECT * FROM sessions
+      ORDER BY created_at DESC
+    `).all() as SessionRow[];
+
+    return rows.map((row) => this.rowToSession(row));
+  }
+
+  /**
+   * 刪除所有 Sessions
+   * @returns 刪除筆數
+   */
+  deleteAllSessions(): number {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const result = this.db.prepare('DELETE FROM sessions').run();
+    return result.changes;
+  }
+
+  /**
    * 刪除 Session
    */
   deleteSession(sessionId: string): boolean {
