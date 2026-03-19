@@ -13,7 +13,7 @@ import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import logger from '../utils/logger.js';
 import { MODEL_CONFIG } from '../config/constants.js';
 import { getOpenCodeServerManager, OpenCodeServerManager } from './OpenCodeServerManager.js';
-import { getOpenCodeSDKAdapter, OpenCodeSDKAdapter } from './OpenCodeSDKAdapter.js';
+import { getOpenCodeSDKAdapter, OpenCodeSDKAdapter, type SendPromptParams } from './OpenCodeSDKAdapter.js';
 import { getSessionEventManager, SessionEventManager } from './SessionEventManager.js';
 import { getStreamingMessageManager } from './StreamingMessageManager.js';
 import { captureSessionError } from '../utils/sentryHelper.js';
@@ -353,6 +353,48 @@ export interface SessionExecutionResult {
   }
 
   /**
+   * 標記 Session 為失敗並清理活躍狀態
+   * @param sessionId Session ID
+   * @param errorMessage 錯誤訊息
+   */
+  async failSession(sessionId: string, errorMessage: string): Promise<Session | null> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    session.fail(errorMessage);
+    await this.saveSession(session);
+
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for failed session ${sessionId}:`, streamingError);
+      }
+    }
+
+    this.activeSessions.delete(sessionId);
+
+    const channelSessionSet = this.channelSessions.get(session.channelId);
+    if (channelSessionSet) {
+      channelSessionSet.delete(sessionId);
+      if (channelSessionSet.size === 0) {
+        this.channelSessions.delete(session.channelId);
+      }
+    }
+
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 取消失敗 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
+    }
+
+    return session;
+  }
+
+  /**
    * 列出 Sessions
    */
   async listSessions(
@@ -475,6 +517,7 @@ export interface SessionExecutionResult {
     }
 
     const opencodeSessionId = session.opencodeSessionId;
+    const promptModel = this.resolvePromptModel(session.model);
 
     if (!opencodeSessionId) {
       throw new Error('Session 資訊不完整');
@@ -484,6 +527,7 @@ export interface SessionExecutionResult {
       await this.sdkAdapter.sendPrompt({
         sessionId: opencodeSessionId,
         prompt,
+        model: promptModel,
       });
       session.updateActivity();
     } catch (error) {
@@ -499,6 +543,32 @@ export interface SessionExecutionResult {
 
       throw error;
     }
+  }
+
+  /**
+   * 將內部模型 ID 轉換為 SDK 所需的 model 物件
+   * @param modelId 模型 ID
+   */
+  private resolvePromptModel(modelId: string): SendPromptParams['model'] | undefined {
+    const normalized = modelId.trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    if (normalized.includes('/')) {
+      const [providerID, ...modelParts] = normalized.split('/');
+      const modelID = modelParts.join('/');
+      if (providerID && modelID) {
+        return { providerID, modelID };
+      }
+      return undefined;
+    }
+
+    // 對於未帶 provider 的模型（例如 nemotron-3-super-free），預設走 opencode provider。
+    return {
+      providerID: 'opencode',
+      modelID: normalized,
+    };
   }
 
   // ============== 私有方法 ==============

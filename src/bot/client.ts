@@ -1123,12 +1123,18 @@ export class DiscordClient extends Client {
    * 處理訊息更新事件
    */
   private handleMessageUpdate(oldMessage: Message | PartialMessage | null, newMessage: Message | PartialMessage): void {
-    if (this.clientOptions.debug) {
-      logger.debug(`[MessageUpdate] ${newMessage.id}`, {
-        oldContent: oldMessage?.content,
-        newContent: newMessage.content,
-      });
-    }
+    if (!this.clientOptions.debug) return;
+
+    const oldContent = oldMessage?.content ?? '';
+    const newContent = newMessage.content ?? '';
+
+    // Discord 會頻繁觸發無內容變更的 update，直接跳過降噪
+    if (oldContent === newContent) return;
+
+    logger.debug(`[MessageUpdate] ${newMessage.id}`, {
+      oldContent,
+      newContent,
+    });
   }
 
   /**
@@ -1147,9 +1153,8 @@ export class DiscordClient extends Client {
    * 處理 typing 開始事件
    */
   private handleTypingStart(typing: Typing): void {
-    if (this.clientOptions.debug) {
-      logger.debug(`[Typing] User ${typing.user.id} in channel ${typing.channel.id}`);
-    }
+    // Typing 事件頻率高，預設不記錄以避免終端機洗版
+    void typing;
   }
 
   /**

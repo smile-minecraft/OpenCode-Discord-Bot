@@ -42,7 +42,7 @@ import {
 
 import { getInitializedSDKAdapter, SDKAdapterError } from '../../src/services/OpenCodeSDKAdapter';
 
-const { convertToModelDefinition } = __test__;
+const { convertToModelDefinition, convertSDKModelToDefinition } = __test__;
 
 // ============== 測試 suite ==============
 
@@ -114,6 +114,26 @@ describe('ModelService', () => {
       expect(result.description).toBe('最新的 Claude Sonnet 模型，平衡了能力和速度，適合大多數任務');
       expect(result.pricing.input).toBe(3.00);
       expect(result.features).toContain('代碼生成');
+    });
+
+    it('SDK 模型未帶 provider 前綴時，應該補上 provider/id 格式', () => {
+      const result = convertSDKModelToDefinition(
+        { id: 'gpt-4o', cost: { input: 5, output: 15 } },
+        'openai'
+      );
+
+      expect(result.id).toBe('openai/gpt-4o');
+      expect(result.provider).toBe('openai');
+    });
+
+    it('SDK 模型已帶 provider 前綴時，應該保留原始 ID', () => {
+      const result = convertSDKModelToDefinition(
+        { id: 'anthropic/claude-sonnet-4', cost: { input: 3, output: 15 } },
+        'openai'
+      );
+
+      expect(result.id).toBe('anthropic/claude-sonnet-4');
+      expect(result.provider).toBe('anthropic');
     });
   });
 

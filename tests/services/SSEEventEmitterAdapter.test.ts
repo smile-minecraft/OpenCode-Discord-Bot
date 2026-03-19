@@ -372,6 +372,26 @@ describe('SSEEventEmitterAdapter', () => {
       expect(errorHandler).not.toHaveBeenCalled();
     });
 
+    it('file.watcher.updated 事件應該被靜默忽略', async () => {
+      const event: SDKEvent = {
+        type: 'file.watcher.updated',
+        properties: {},
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const messageHandler = vi.fn();
+      const errorHandler = vi.fn();
+
+      adapter.on('message', messageHandler);
+      adapter.on('error', errorHandler);
+      adapter.start(mockEventStream, 'session-123');
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(messageHandler).not.toHaveBeenCalled();
+      expect(errorHandler).not.toHaveBeenCalled();
+    });
+
     it('應該處理 camelCase 和 snake_case 屬性', async () => {
       // Test camelCase
       const event: SDKEvent = {

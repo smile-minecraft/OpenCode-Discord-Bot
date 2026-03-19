@@ -542,53 +542,110 @@ export class OpenCodeSDKAdapter {
     
     try {
       const response = await client.config.providers();
-      
-      // 直接打印 response.data
-      const data = (response as any).data;
-      logger.info('[OpenCodeSDKAdapter] response.data keys:', Object.keys(data || {}));
-      
-      if (data && data.providers) {
-        logger.info('[OpenCodeSDKAdapter] data.providers keys (前3个):', Object.keys(data.providers).slice(0, 3));
-        
-        // 打印第一个 provider 的键和值
-        const firstProviderKey = Object.keys(data.providers)[0];
-        if (firstProviderKey) {
-          const firstProvider = data.providers[firstProviderKey];
-          logger.info(`[OpenCodeSDKAdapter] Provider [${firstProviderKey}] 的 keys:`, Object.keys(firstProvider || {}));
-          logger.info(`[OpenCodeSDKAdapter] Provider [${firstProviderKey}] models 类型:`, typeof firstProvider?.models);
-          if (firstProvider?.models) {
-            logger.info(`[OpenCodeSDKAdapter] Provider [${firstProviderKey}] models keys:`, Object.keys(firstProvider.models).slice(0, 5));
-          }
-        }
-      }
-      
-      // 使用简化的解析
-      const providers: SDKProviderInfo[] = [];
-      const rawProviders = (response as any).data?.providers || {};
-      
-      for (const [providerId, providerData] of Object.entries(rawProviders)) {
-        const pData = providerData as any;
-        const modelsObj = pData.models || {};
-        
-        // models 可能是对象，需要转换为数组
-        const models = Object.entries(modelsObj).map(([modelId, modelInfo]: [string, any]) => ({
-          id: modelId,
-          cost: modelInfo.cost || { input: 0, output: 0 },
-        }));
-        
-        providers.push({
-          id: providerId,
-          models,
-        });
-        
-        logger.info(`[OpenCodeSDKAdapter] Provider: ${providerId}, Models: ${models.length}`);
-      }
-      
+
+      const rawProviders = (response as any).data?.providers;
+      const providers = this.normalizeProviderResponse(rawProviders);
+      logger.info(`[OpenCodeSDKAdapter] Providers loaded: ${providers.length}`);
+
       return providers;
     } catch (error) {
       logger.error('[OpenCodeSDKAdapter] 获取 providers 失败:', error);
       throw this.mapSDKError(error, '获取 Provider 列表失败');
     }
+  }
+
+  /**
+   * 正規化 providers 響應結構（兼容 array/object）
+   */
+  private normalizeProviderResponse(rawProviders: unknown): SDKProviderInfo[] {
+    if (!rawProviders) {
+      return [];
+    }
+
+    const providers: SDKProviderInfo[] = [];
+
+    // 結構 1: providers 是陣列
+    if (Array.isArray(rawProviders)) {
+      for (const providerData of rawProviders) {
+        if (!providerData || typeof providerData !== 'object') continue;
+        const providerRecord = providerData as Record<string, unknown>;
+        const providerId = String(
+          providerRecord.id
+          ?? providerRecord.providerID
+          ?? providerRecord.name
+          ?? 'opencode'
+        );
+        const models = this.normalizeProviderModels(providerRecord.models);
+        providers.push({ id: providerId, models });
+      }
+      return providers;
+    }
+
+    // 結構 2: providers 是物件（key 為 provider id）
+    if (typeof rawProviders === 'object') {
+      for (const [providerKey, providerData] of Object.entries(rawProviders as Record<string, unknown>)) {
+        const providerRecord = providerData && typeof providerData === 'object'
+          ? (providerData as Record<string, unknown>)
+          : {};
+        const providerId = String(providerRecord.id ?? providerRecord.providerID ?? providerKey);
+        const models = this.normalizeProviderModels(providerRecord.models);
+        providers.push({ id: providerId, models });
+      }
+    }
+
+    return providers;
+  }
+
+  /**
+   * 正規化 provider models（兼容 array/object）
+   */
+  private normalizeProviderModels(rawModels: unknown): SDKModelInfo[] {
+    if (!rawModels) {
+      return [];
+    }
+
+    // models 為陣列
+    if (Array.isArray(rawModels)) {
+      return rawModels
+        .map((model) => {
+          if (!model || typeof model !== 'object') return null;
+          const record = model as Record<string, unknown>;
+          const modelId = record.id ?? record.modelID ?? record.name;
+          if (typeof modelId !== 'string' || modelId.trim() === '') return null;
+          const cost = record.cost && typeof record.cost === 'object'
+            ? (record.cost as Record<string, unknown>)
+            : {};
+          return {
+            id: modelId,
+            cost: {
+              input: typeof cost.input === 'number' ? cost.input : 0,
+              output: typeof cost.output === 'number' ? cost.output : 0,
+            },
+          };
+        })
+        .filter((model): model is SDKModelInfo => model !== null);
+    }
+
+    // models 為物件
+    if (typeof rawModels === 'object') {
+      return Object.entries(rawModels as Record<string, unknown>).map(([modelId, modelInfo]) => {
+        const info = modelInfo && typeof modelInfo === 'object'
+          ? (modelInfo as Record<string, unknown>)
+          : {};
+        const cost = info.cost && typeof info.cost === 'object'
+          ? (info.cost as Record<string, unknown>)
+          : {};
+        return {
+          id: modelId,
+          cost: {
+            input: typeof cost.input === 'number' ? cost.input : 0,
+            output: typeof cost.output === 'number' ? cost.output : 0,
+          },
+        };
+      });
+    }
+
+    return [];
   }
 
   /**

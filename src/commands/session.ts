@@ -150,10 +150,15 @@ export async function handleSessionModelAutocomplete(
     // 限制返回數量（Discord 限制為 25 個）
     const limitedModels = filteredModels.slice(0, 25);
 
-    const choices = limitedModels.map((model: ModelDefinition) => ({
-      name: `${model.name} (${model.provider})`,
-      value: model.id,
-    }));
+    const choices = limitedModels.map((model: ModelDefinition) => {
+      const providerFromId = model.id.includes('/')
+        ? model.id.split('/')[0]
+        : model.provider;
+      return {
+        name: `${model.name} (${providerFromId})`,
+        value: model.id,
+      };
+    });
 
     await interaction.respond(choices);
   } catch (error) {
@@ -312,8 +317,15 @@ async function handleStartCommand(
           await sessionManager.sendPrompt(session.sessionId, initialPrompt);
           logger.info(`[SessionCommand] Initial prompt sent for session ${session.sessionId}`);
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : '未知錯誤';
           if (streamingStarted) {
             streamingManager.removeStream(session.sessionId, threadId);
+          }
+          await sessionManager.failSession(session.sessionId, `初始提示發送失敗: ${errorMessage}`);
+          if (thread && 'send' in thread) {
+            await thread.send({
+              content: `❌ 初始提示發送失敗：${errorMessage}`,
+            });
           }
           throw error;
         }

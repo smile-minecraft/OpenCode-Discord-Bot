@@ -33,6 +33,10 @@ export type SDKEventType =
   | 'session.updated'
   | 'session.status'
   | 'session.diff'
+  // File watcher events
+  | 'file.watcher.updated'
+  | 'file.watcher.created'
+  | 'file.watcher.deleted'
   // Question events
   | 'question.asked'
   // Error events
@@ -53,6 +57,8 @@ export interface SDKEventProperties {
   messageId?: string;
   /** 內容 */
   content?: string;
+  /** 訊息角色 */
+  role?: string;
   /** 完整標記 */
   is_complete?: boolean;
   isComplete?: boolean;
@@ -73,7 +79,18 @@ export interface SDKEventProperties {
     text: string;
     options: Array<{ label: string; value: string; description?: string }>;
     multiple?: boolean;
+    session_id?: string;
+    sessionId?: string;
   };
+  /** 問題 ID（部分事件格式會放在頂層） */
+  question_id?: string;
+  questionId?: string;
+  /** 問題文字（部分事件格式會放在頂層） */
+  text?: string;
+  /** 問題選項（部分事件格式會放在頂層） */
+  options?: Array<{ label?: string; value?: string; description?: string } | string>;
+  /** 是否可複選（部分事件格式會放在頂層） */
+  multiple?: boolean;
   /** 其他屬性 */
   [key: string]: unknown;
 }
@@ -97,6 +114,7 @@ export type SSEEventTypeInternal =
   | 'error'
   | 'connected'
   | 'disconnected'
+  | 'thinking'
   | 'question';
 
 /**
@@ -131,6 +149,7 @@ export interface ConnectedEventData {
 export interface ErrorEventData {
   sessionId?: string;
   error: string;
+  message?: string;
 }
 
 /**
@@ -152,6 +171,13 @@ export interface QuestionEventData {
 }
 
 /**
+ * Thinking 開始事件
+ */
+export interface ThinkingEventData {
+  sessionId: string;
+}
+
+/**
  * 內部 SSE 事件
  */
 export interface SSEEventInternal {
@@ -162,6 +188,7 @@ export interface SSEEventInternal {
     | ConnectedEventData
     | ErrorEventData
     | SessionCompleteEventData
+    | ThinkingEventData
     | QuestionEventData;
   timestamp: number;
 }
@@ -197,6 +224,9 @@ const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
   'session.updated': null,
   'session.status': null,
   'session.diff': null,
+  'file.watcher.updated': null,
+  'file.watcher.created': null,
+  'file.watcher.deleted': null,
   
   // Question events
   'question.asked': 'question',
@@ -399,6 +429,9 @@ export class SSEEventEmitterAdapter
     // null means we want to explicitly ignore this event
     // undefined means the event type is not recognized
     if (internalType === undefined) {
+      if (typeof event.type === 'string' && event.type.startsWith('file.watcher.')) {
+        return;
+      }
       logger.warn(`[SSEEventEmitterAdapter] 未知的 SDK 事件類型: ${event.type}`);
       return;
     }
@@ -412,6 +445,18 @@ export class SSEEventEmitterAdapter
 
     switch (internalType) {
       case 'message':
+        const messageRole = this.extractMessageRole(props);
+        if (this.isIgnoredMessageRole(messageRole)) {
+          break;
+        }
+
+        const hasThinkingSignal = this.hasThinkingSignal(props);
+        if (hasThinkingSignal) {
+          this.emitEvent('thinking', {
+            sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
+          } as ThinkingEventData);
+        }
+
         // 提取內容 - 支援多種 SDK 格式
         let extractedContent = props.content || '';
         
@@ -496,9 +541,15 @@ export class SSEEventEmitterAdapter
         break;
 
       case 'error':
+        const errorMessage = typeof props.error === 'string' && props.error.trim() !== ''
+          ? props.error
+          : typeof props.message === 'string' && props.message.trim() !== ''
+            ? props.message
+            : '未知錯誤';
         this.emitEvent('error', {
-          sessionId: props.session_id || props.sessionId,
-          error: props.error || '未知錯誤',
+          sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
+          error: errorMessage,
+          message: errorMessage,
         } as ErrorEventData);
         break;
 
@@ -510,20 +561,23 @@ export class SSEEventEmitterAdapter
         // 斷開事件已在 stop 時發送
         break;
 
-      case 'question':
-        if (props.question) {
-          this.emitEvent('question', {
+      case 'question': {
+        const parsedQuestion = this.parseQuestionEvent(props);
+        if (parsedQuestion) {
+          this.emitEvent('question', parsedQuestion);
+        } else {
+          logger.warn('[SSEEventEmitterAdapter] question 事件解析失敗', {
             sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
-            questionId: props.question.id,
-            text: props.question.text,
-            options: props.question.options,
-            multiple: props.question.multiple || false,
-          } as QuestionEventData);
+            keys: Object.keys(props),
+          });
         }
         break;
+      }
     }
 
-    logger.debug(`[SSEEventEmitterAdapter] 處理事件: ${event.type} -> ${internalType}`);
+    if (internalType !== 'message' && internalType !== 'thinking') {
+      logger.debug(`[SSEEventEmitterAdapter] 處理事件: ${event.type} -> ${internalType}`);
+    }
   }
 
   /**
@@ -539,6 +593,7 @@ export class SSEEventEmitterAdapter
       | ConnectedEventData
       | ErrorEventData
       | SessionCompleteEventData
+      | ThinkingEventData
       | QuestionEventData
   ): void {
     const event: SSEEventInternal = {
@@ -550,7 +605,185 @@ export class SSEEventEmitterAdapter
     this.emit(type, event);
     this.emit('*', event); // 通配符事件
 
-    logger.debug(`[SSEEventEmitterAdapter] 發送事件: ${type}`);
+    if (type !== 'message' && type !== 'thinking') {
+      logger.debug(`[SSEEventEmitterAdapter] 發送事件: ${type}`);
+    }
+  }
+
+  /**
+   * 提取訊息角色
+   */
+  private extractMessageRole(props: SDKEventProperties): string | null {
+    const info = props.info && typeof props.info === 'object'
+      ? (props.info as Record<string, unknown>)
+      : null;
+    const infoMessage = info?.message && typeof info.message === 'object'
+      ? (info.message as Record<string, unknown>)
+      : null;
+    const message = props.message && typeof props.message === 'object'
+      ? (props.message as Record<string, unknown>)
+      : null;
+
+    const candidates = [
+      props.role,
+      info?.role,
+      infoMessage?.role,
+      message?.role,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim() !== '') {
+        return candidate.trim().toLowerCase();
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 判斷是否應忽略該角色的訊息
+   */
+  private isIgnoredMessageRole(role: string | null): boolean {
+    if (!role) return false;
+    return role === 'user' || role === 'human' || role === 'system' || role === 'tool';
+  }
+
+  /**
+   * 判斷事件是否為「思考中」訊號
+   */
+  private hasThinkingSignal(props: SDKEventProperties): boolean {
+    const part = props.part && typeof props.part === 'object'
+      ? (props.part as Record<string, unknown>)
+      : null;
+    if (part && this.isThinkingPartType(part.type)) {
+      return true;
+    }
+
+    const delta = props.delta && typeof props.delta === 'object'
+      ? (props.delta as Record<string, unknown>)
+      : null;
+    if (delta && this.isThinkingPartType(delta.type)) {
+      return true;
+    }
+
+    const info = props.info && typeof props.info === 'object'
+      ? (props.info as Record<string, unknown>)
+      : null;
+    const infoPart = info?.part && typeof info.part === 'object'
+      ? (info.part as Record<string, unknown>)
+      : null;
+    if (infoPart && this.isThinkingPartType(infoPart.type)) {
+      return true;
+    }
+
+    if (Array.isArray(info?.parts)) {
+      return info.parts.some((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return false;
+        return this.isThinkingPartType((candidate as Record<string, unknown>).type);
+      });
+    }
+
+    return false;
+  }
+
+  /**
+   * 判斷 part type 是否屬於思考類型
+   */
+  private isThinkingPartType(type: unknown): boolean {
+    if (typeof type !== 'string') return false;
+    const normalized = type.toLowerCase();
+    return normalized === 'thinking'
+      || normalized === 'reasoning'
+      || normalized === 'reasoning_text'
+      || normalized === 'analysis';
+  }
+
+  /**
+   * 解析 question 事件（兼容多種 SDK payload）
+   */
+  private parseQuestionEvent(props: SDKEventProperties): QuestionEventData | null {
+    const questionObject = props.question && typeof props.question === 'object'
+      ? props.question
+      : null;
+
+    const questionId = questionObject?.id
+      || (typeof props.question_id === 'string' ? props.question_id : '')
+      || (typeof props.questionId === 'string' ? props.questionId : '')
+      || (typeof props.request_id === 'string' ? props.request_id : '')
+      || (typeof props.requestId === 'string' ? props.requestId : '')
+      || (typeof props.id === 'string' ? props.id : '');
+
+    const text = questionObject?.text
+      || (typeof props.text === 'string' ? props.text : '')
+      || (typeof props.prompt === 'string' ? props.prompt : '')
+      || (typeof props.title === 'string' ? props.title : '');
+
+    if (!questionId || !text) {
+      return null;
+    }
+
+    const rawOptions = questionObject?.options ?? props.options;
+    const options = this.normalizeQuestionOptions(rawOptions);
+
+    const sessionId = questionObject?.session_id
+      || questionObject?.sessionId
+      || props.session_id
+      || props.sessionId
+      || this.currentSessionId
+      || '';
+
+    return {
+      sessionId,
+      questionId,
+      text,
+      options,
+      multiple: questionObject?.multiple || props.multiple || false,
+    };
+  }
+
+  /**
+   * 正規化 question options
+   */
+  private normalizeQuestionOptions(
+    rawOptions: unknown
+  ): Array<{ label: string; value: string; description?: string }> {
+    if (!Array.isArray(rawOptions)) {
+      return [];
+    }
+
+    return rawOptions
+      .map((option) => {
+        if (typeof option === 'string') {
+          const text = option.trim();
+          if (!text) return null;
+          return { label: text, value: text };
+        }
+
+        if (!option || typeof option !== 'object') {
+          return null;
+        }
+
+        const candidate = option as Record<string, unknown>;
+        const label = typeof candidate.label === 'string' && candidate.label.trim() !== ''
+          ? candidate.label
+          : typeof candidate.text === 'string' && candidate.text.trim() !== ''
+            ? candidate.text
+            : typeof candidate.value === 'string'
+              ? candidate.value
+              : '';
+        if (!label) return null;
+
+        const value = typeof candidate.value === 'string' && candidate.value.trim() !== ''
+          ? candidate.value
+          : label;
+
+        const description = typeof candidate.description === 'string' && candidate.description.trim() !== ''
+          ? candidate.description
+          : undefined;
+
+        return { label, value, description };
+      })
+      .filter((option): option is { label: string; value: string; description?: string } => option !== null);
   }
 
   /**

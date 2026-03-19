@@ -397,6 +397,68 @@ describe('OpenCodeSDKAdapter', () => {
     });
   });
 
+  describe('getProviders() - 解析 Provider 列表', () => {
+    it('應該正確解析物件格式 providers', async () => {
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        config: {
+          providers: vi.fn().mockResolvedValue({
+            data: {
+              providers: {
+                openai: {
+                  models: {
+                    'gpt-4o': { cost: { input: 5, output: 15 } },
+                  },
+                },
+              },
+            },
+          }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+
+      const providers = await adapter.getProviders();
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].id).toBe('openai');
+      expect(providers[0].models[0]).toEqual({
+        id: 'gpt-4o',
+        cost: { input: 5, output: 15 },
+      });
+    });
+
+    it('應該正確解析陣列格式 providers（避免使用索引當 provider id）', async () => {
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        config: {
+          providers: vi.fn().mockResolvedValue({
+            data: {
+              providers: [
+                {
+                  id: 'openai',
+                  models: [
+                    { id: 'gpt-4o-mini', cost: { input: 0.15, output: 0.6 } },
+                  ],
+                },
+              ],
+            },
+          }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+
+      const providers = await adapter.getProviders();
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].id).toBe('openai');
+      expect(providers[0].models[0].id).toBe('gpt-4o-mini');
+    });
+  });
+
   describe('cleanup() - 清理資源', () => {
     it('本地模式時應該停止服務器', async () => {
       const mockClient = { 

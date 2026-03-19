@@ -18,6 +18,7 @@ import { IEventStreamAdapter } from './EventStreamFactory.js';
 import { SSEEventEmitterAdapter } from './SSEEventEmitterAdapter.js';
 import { Session } from '../database/models/Session.js';
 import { getToolStateTracker } from './ToolStateTracker.js';
+import { getThreadManager } from './ThreadManager.js';
 import logger from '../utils/logger.js';
 
 // ============== SSE 事件類型定義 ==============
@@ -29,6 +30,7 @@ export type SSEEventType =
   | 'connected'
   | 'message'
   | 'tool_request'
+  | 'thinking'
   | 'waiting'
   | 'error'
   | 'session_complete'
@@ -55,6 +57,7 @@ export interface MessageEventData {
   content: string;
   sessionId: string;
   isComplete?: boolean;
+  isThinking?: boolean;
 }
 
 /**
@@ -69,8 +72,9 @@ export interface SessionCompleteEventData {
  * 錯誤事件數據
  */
 export interface ErrorEventData {
-  message: string;
-  sessionId: string;
+  message?: string;
+  error?: string;
+  sessionId?: string;
 }
 
 /**
@@ -104,6 +108,13 @@ export interface QuestionEventData {
   multiple: boolean;
 }
 
+/**
+ * Thinking 開始事件
+ */
+export interface ThinkingEventData {
+  sessionId: string;
+}
+
 interface ConnectionEventData {
   sessionId: string;
 }
@@ -126,6 +137,12 @@ interface StreamingSession {
   hasFlushed: boolean;
   /** typing indicator 定時器 */
   typingTimer: NodeJS.Timeout | null;
+  /** 無事件逾時定時器 */
+  stallTimer: NodeJS.Timeout | null;
+  /** 最後一次收到有效事件的時間戳 */
+  lastEventAt: number;
+  /** 是否已發送「思考中」提示 */
+  hasSentThinkingNotice: boolean;
   /** Discord Client */
   discordClient: Client;
 }
@@ -137,6 +154,9 @@ const MAX_MESSAGE_LENGTH = 2000;
 
 /** typing indicator 刷新間隔（毫秒）- 少於 10 秒以保持狀態 */
 const TYPING_REFRESH_INTERVAL = 7500;
+
+/** 串流無事件逾時（毫秒） */
+const STREAM_IDLE_TIMEOUT = 60000;
 
 /** 工具狀態更新間隔（毫秒） */
 const TOOL_STATE_UPDATE_INTERVAL = 1000;
@@ -207,7 +227,8 @@ class DiscordRateLimiter {
 /**
  * 智能分段函數
  * @description 將長內容切分為 Discord 訊息上限以內的多個區塊
- * - 盡量在換行符號處切分
+ * - 優先按 Markdown 標題分段
+ * - 再以行/空白切分
  * - 避免在 Markdown 程式碼區塊中切斷
  */
 function chunkContent(content: string): string[] {
@@ -215,29 +236,87 @@ function chunkContent(content: string): string[] {
     return [content];
   }
 
+  const sections = splitByMarkdownHeadings(content);
+  if (sections.length <= 1) {
+    return splitLargeChunk(content);
+  }
+
+  const chunks: string[] = [];
+  let buffer = '';
+
+  for (const section of sections) {
+    if (section.length > MAX_MESSAGE_LENGTH) {
+      if (buffer) {
+        chunks.push(buffer);
+        buffer = '';
+      }
+      chunks.push(...splitLargeChunk(section));
+      continue;
+    }
+
+    const candidate = buffer ? `${buffer}\n\n${section}` : section;
+    if (candidate.length <= MAX_MESSAGE_LENGTH) {
+      buffer = candidate;
+    } else {
+      if (buffer) {
+        chunks.push(buffer);
+      }
+      buffer = section;
+    }
+  }
+
+  if (buffer) {
+    chunks.push(buffer);
+  }
+
+  return chunks.filter(chunk => chunk.length > 0);
+}
+
+/**
+ * 依 Markdown 標題切分內容
+ */
+function splitByMarkdownHeadings(content: string): string[] {
+  const lines = content.split('\n');
+  const sections: string[] = [];
+  let currentSection: string[] = [];
+
+  for (const line of lines) {
+    const isHeading = /^\s*#{1,6}\s+\S+/.test(line);
+    if (isHeading && currentSection.length > 0) {
+      sections.push(currentSection.join('\n').trim());
+      currentSection = [line];
+    } else {
+      currentSection.push(line);
+    }
+  }
+
+  if (currentSection.length > 0) {
+    sections.push(currentSection.join('\n').trim());
+  }
+
+  return sections.filter(section => section.length > 0);
+}
+
+/**
+ * 對超大段落做保底切分（保留程式碼區塊完整性）
+ */
+function splitLargeChunk(content: string): string[] {
   const chunks: string[] = [];
   let remaining = content;
 
   while (remaining.length > MAX_MESSAGE_LENGTH) {
-    // 找到最佳切分點
     let splitPoint = remaining.lastIndexOf('\n', MAX_MESSAGE_LENGTH);
-
-    // 如果沒有找到換行符，嘗試找空格
     if (splitPoint === -1) {
       splitPoint = remaining.lastIndexOf(' ', MAX_MESSAGE_LENGTH);
     }
-
-    // 如果都沒有，找到硬性切分點
     if (splitPoint === -1 || splitPoint === 0) {
       splitPoint = MAX_MESSAGE_LENGTH;
     }
 
     const chunk = remaining.slice(0, splitPoint);
-
-    // 檢查是否在程式碼區塊中
     const openCodeBlocks = (chunk.match(/```/g) || []).length;
+
     if (openCodeBlocks % 2 === 1) {
-      // 單數個 ``` - 需要補上結尾
       chunks.push(chunk + '```');
       remaining = '```' + remaining.slice(splitPoint);
     } else {
@@ -245,23 +324,13 @@ function chunkContent(content: string): string[] {
       remaining = remaining.slice(splitPoint);
     }
 
-    // 防止無窮循環
     if (chunk.length === 0 && remaining.length > 0) {
-      // 強制切分
       chunks.push(remaining.slice(0, MAX_MESSAGE_LENGTH));
       remaining = remaining.slice(MAX_MESSAGE_LENGTH);
     }
   }
 
-  // 添加剩餘內容
   if (remaining.length > 0) {
-    // 檢查是否需要補上 ``` 開始標籤
-    const lastChunk = chunks[chunks.length - 1];
-    const openCodeBlocks = (lastChunk.match(/```/g) || []).length;
-    if (openCodeBlocks % 2 === 1) {
-      chunks[chunks.length - 1] = lastChunk + '```';
-      remaining = remaining.replace(/^```/, '');
-    }
     chunks.push(remaining);
   }
 
@@ -358,20 +427,26 @@ export class StreamingMessageManager {
 
     if (existingStream) {
       this.stopTypingIndicator(existingStream);
+      this.clearStallTimer(existingStream);
     }
 
     // 創建 typing indicator 定時器
     const typingTimer = this.startTypingIndicator(channelId);
 
-    this.activeStreams.set(streamKey, {
+    const streamSession: StreamingSession = {
       sessionId: session.sessionId,
       channelId: channelId,
       content: existingStream?.content ?? '',
       isComplete: false,
       hasFlushed: false,
       typingTimer: typingTimer,
+      stallTimer: null,
+      lastEventAt: Date.now(),
+      hasSentThinkingNotice: existingStream?.hasSentThinkingNotice ?? false,
       discordClient: this.discordClient,
-    });
+    };
+    this.activeStreams.set(streamKey, streamSession);
+    this.refreshStreamTimeout(streamSession);
 
     // 註冊 Session ID 雙向映射
     this.sessionIdToOpenCodeId.set(session.sessionId, session.opencodeSessionId || '');
@@ -425,7 +500,6 @@ export class StreamingMessageManager {
       const channel = await this.getChannel(channelId, this.discordClient);
       if (channel && 'sendTyping' in channel) {
         await channel.sendTyping();
-        logger.debug(`[StreamingMessageManager] Sent typing indicator to ${channelId}`);
       }
     } catch (error) {
       logger.debug(`[StreamingMessageManager] Failed to send typing:`, error);
@@ -441,6 +515,50 @@ export class StreamingMessageManager {
       clearInterval(stream.typingTimer);
       stream.typingTimer = null;
       logger.debug(`[StreamingMessageManager] Stopped typing indicator for ${stream.sessionId}`);
+    }
+  }
+
+  /**
+   * 清理串流逾時計時器
+   */
+  private clearStallTimer(stream: StreamingSession): void {
+    if (stream.stallTimer) {
+      clearTimeout(stream.stallTimer);
+      stream.stallTimer = null;
+    }
+  }
+
+  /**
+   * 刷新串流無事件逾時計時器
+   */
+  private refreshStreamTimeout(stream: StreamingSession): void {
+    stream.lastEventAt = Date.now();
+    this.clearStallTimer(stream);
+
+    stream.stallTimer = setTimeout(() => {
+      const streamKey = this.getStreamKey(stream.channelId, stream.sessionId);
+      const activeStream = this.activeStreams.get(streamKey);
+      if (!activeStream || activeStream.hasFlushed) {
+        return;
+      }
+
+      logger.warn(`[StreamingMessageManager] Stream idle timeout: ${activeStream.sessionId}`);
+      void this.flushContent(activeStream);
+    }, STREAM_IDLE_TIMEOUT);
+
+    // 避免 watchdog 計時器阻止程序退出
+    stream.stallTimer.unref?.();
+  }
+
+  /**
+   * 更新指定 Session 的串流活動時間
+   */
+  private touchStreamBySession(sessionId: string): void {
+    for (const stream of this.activeStreams.values()) {
+      if (this.isSessionIdMatch(stream.sessionId, sessionId)) {
+        this.refreshStreamTimeout(stream);
+        break;
+      }
     }
   }
 
@@ -472,6 +590,7 @@ export class StreamingMessageManager {
     const stream = this.activeStreams.get(streamKey);
     if (stream) {
       this.stopTypingIndicator(stream);
+      this.clearStallTimer(stream);
     }
 
     this.activeStreams.delete(streamKey);
@@ -499,6 +618,12 @@ export class StreamingMessageManager {
     adapter.on('message', (event: unknown) => {
       const data = (event as SSEEvent).data as MessageEventData;
       this.handleMessageEvent(data);
+    });
+
+    // 監聽思考事件
+    adapter.on('thinking', (event: unknown) => {
+      const data = (event as SSEEvent).data as ThinkingEventData;
+      void this.handleThinkingEvent(data);
     });
 
     // 監聽 Session 完成
@@ -549,16 +674,23 @@ export class StreamingMessageManager {
    * @param data 訊息事件數據
    */
   private handleMessageEvent(data: MessageEventData): void {
-    // 找到對應的串流
-    for (const [_key, stream] of this.activeStreams) {
-      if (this.isSessionIdMatch(stream.sessionId, data.sessionId)) {
-        // 累積內容
-        stream.content += data.content;
-        stream.isComplete = data.isComplete ?? false;
+    const stream = this.findActiveStreamBySessionId(data.sessionId);
+    if (!stream) {
+      return;
+    }
 
-        logger.debug(`[StreamingMessageManager] 累積內容: ${stream.sessionId}, length: ${stream.content.length}`);
-        break;
-      }
+    if (data.isThinking) {
+      void this.handleThinkingEvent({ sessionId: data.sessionId });
+      return;
+    }
+
+    if (data.content && data.content.trim() !== '') {
+      stream.content += data.content;
+      this.refreshStreamTimeout(stream);
+    }
+
+    if (data.isComplete !== undefined) {
+      stream.isComplete = data.isComplete;
     }
   }
 
@@ -583,19 +715,27 @@ export class StreamingMessageManager {
    * 將緩衝區內容發送到 Discord
    * @param stream 串流會話
    */
-  private async flushContent(stream: StreamingSession): Promise<void> {
-    if (stream.hasFlushed) {
+  private async flushContent(
+    stream: StreamingSession,
+    options: { keepStream?: boolean } = {}
+  ): Promise<void> {
+    const keepStream = options.keepStream ?? false;
+
+    if (stream.hasFlushed && !keepStream) {
       logger.debug(`[StreamingMessageManager] 內容已發送，跳過: ${stream.sessionId}`);
       return;
     }
 
     // 停止 typing indicator
     this.stopTypingIndicator(stream);
+    this.clearStallTimer(stream);
 
     if (!stream.content || stream.content.trim() === '') {
       logger.debug(`[StreamingMessageManager] 內容為空，跳過發送: ${stream.sessionId}`);
-      stream.hasFlushed = true;
-      this.cleanupStream(stream.sessionId, stream.channelId);
+      if (!keepStream) {
+        stream.hasFlushed = true;
+        this.cleanupStream(stream.sessionId, stream.channelId);
+      }
       return;
     }
 
@@ -626,7 +766,12 @@ export class StreamingMessageManager {
         logger.info(`[StreamingMessageManager] 訊息已分發送: ${stream.sessionId}, chunks: ${chunks.length}`);
       }
 
-      stream.hasFlushed = true;
+      if (keepStream) {
+        stream.content = '';
+        stream.hasFlushed = false;
+      } else {
+        stream.hasFlushed = true;
+      }
     } catch (error) {
       logger.error('[StreamingMessageManager] 發送訊息失敗:', error);
 
@@ -641,8 +786,10 @@ export class StreamingMessageManager {
         // 忽略錯誤
       }
     } finally {
-      // 清理串流
-      this.cleanupStream(stream.sessionId, stream.channelId);
+      if (!keepStream) {
+        // 清理串流
+        this.cleanupStream(stream.sessionId, stream.channelId);
+      }
     }
   }
 
@@ -651,6 +798,8 @@ export class StreamingMessageManager {
    * @param data Tool 請求事件數據
    */
   private handleToolRequestEvent(data: ToolUpdateEventData): void {
+    this.touchStreamBySession(data.sessionId);
+
     const toolStateTracker = getToolStateTracker();
 
     // 追蹤新的工具執行
@@ -780,43 +929,16 @@ export class StreamingMessageManager {
           return;
         }
 
-        // 為每個工具發送狀態訊息
+        // 每個工具調用僅發送一次固定格式訊息
         for (const tool of tools) {
-          const statusEmoji = {
-            pending: '⏳',
-            running: '🔄',
-            completed: '✅',
-            error: '❌',
-          }[tool.status] || '❓';
-
-          let content = `${statusEmoji} **${tool.toolName}** - `;
-
-          switch (tool.status) {
-            case 'pending':
-              content += '等待執行...';
-              break;
-            case 'running':
-              content += '執行中...';
-              break;
-            case 'completed':
-              content += '完成';
-              if (tool.result) {
-                const resultStr = typeof tool.result === 'string'
-                  ? tool.result
-                  : JSON.stringify(tool.result, null, 2);
-                // 截斷過長的結果
-                const truncated = resultStr.length > 500 ? resultStr.slice(0, 500) + '...' : resultStr;
-                content += `\n\`\`\`\n${truncated}\n\`\`\``;
-              }
-              break;
-            case 'error':
-              content += `錯誤: ${tool.error || 'Unknown error'}`;
-              break;
+          const toolKey = `${stream.sessionId}:${tool.id}`;
+          if (this.toolMessageMap.has(toolKey)) {
+            continue;
           }
 
-          // 發送到頻道
-          await channel.send({ content });
-          logger.debug(`[StreamingMessageManager] Tool state sent: ${tool.toolName} (${tool.status})`);
+          const message = await channel.send({ content: `工具調用：${tool.toolName}` });
+          this.toolMessageMap.set(toolKey, message.id);
+          logger.debug(`[StreamingMessageManager] Tool invocation sent: ${tool.toolName} (${tool.status})`);
         }
       } catch (error) {
         logger.error('[StreamingMessageManager] 發送工具狀態失敗:', error);
@@ -858,12 +980,18 @@ export class StreamingMessageManager {
    * @param data 錯誤事件數據
    */
   private handleSessionErrorEvent(data: ErrorEventData): void {
-    logger.error(`[StreamingMessageManager] Session error: ${data.sessionId}`, { message: data.message });
+    const sessionId = data.sessionId ?? '';
+    const message = data.message ?? data.error ?? '未知錯誤';
+    logger.error(`[StreamingMessageManager] Session error: ${sessionId || 'unknown'}`, { message });
+
+    if (!sessionId) {
+      return;
+    }
 
     // 找到對應的串流
     let targetStream: StreamingSession | undefined;
     for (const stream of this.activeStreams.values()) {
-      if (this.isSessionIdMatch(stream.sessionId, data.sessionId)) {
+      if (this.isSessionIdMatch(stream.sessionId, sessionId)) {
         targetStream = stream;
         break;
       }
@@ -874,7 +1002,7 @@ export class StreamingMessageManager {
       this.stopTypingIndicator(targetStream);
 
       // 發送錯誤訊息
-      this.sendErrorMessage(targetStream, data.message);
+      this.sendErrorMessage(targetStream, message);
     }
   }
 
@@ -916,38 +1044,35 @@ export class StreamingMessageManager {
     logger.info(`[StreamingMessageManager] Question event received: ${data.questionId}`, {
       sessionId: data.sessionId,
       text: data.text,
-      optionsCount: data.options.length,
+      optionsCount: data.options?.length ?? 0,
       multiple: data.multiple,
     });
 
-    // 找到對應的串流
-    let targetStream: StreamingSession | undefined;
-    for (const stream of this.activeStreams.values()) {
-      if (this.isSessionIdMatch(stream.sessionId, data.sessionId)) {
-        targetStream = stream;
-        break;
+    const targetStream = this.findActiveStreamBySessionId(data.sessionId);
+
+    if (targetStream) {
+      // 停止 typing indicator
+      this.stopTypingIndicator(targetStream);
+      this.clearStallTimer(targetStream);
+
+      // 先發送累積的內容（如果有的話），但保留 stream 以等待使用者回答後續流程
+      if (targetStream.content && targetStream.content.trim() !== '' && !targetStream.hasFlushed) {
+        await this.flushContent(targetStream, { keepStream: true });
       }
     }
 
-    if (!targetStream) {
-      logger.warn(`[StreamingMessageManager] No active stream found for question: ${data.sessionId}`);
+    const context = this.resolveChannelContextForSession(data.sessionId, targetStream);
+    if (!context) {
+      logger.warn(`[StreamingMessageManager] No channel context found for question: ${data.sessionId}`);
       return;
-    }
-
-    // 停止 typing indicator
-    this.stopTypingIndicator(targetStream);
-
-    // 先發送累積的內容（如果有的話）
-    if (targetStream.content && targetStream.content.trim() !== '' && !targetStream.hasFlushed) {
-      await this.flushContent(targetStream);
     }
 
     // 發送問題訊息
     await this.rateLimiter.enqueue(async () => {
       try {
-        const channel = await this.getChannel(targetStream!.channelId, targetStream!.discordClient);
+        const channel = await this.getChannel(context.channelId, context.discordClient);
         if (!channel) {
-          logger.warn(`[StreamingMessageManager] 找不到頻道: ${targetStream!.channelId}`);
+          logger.warn(`[StreamingMessageManager] 找不到頻道: ${context.channelId}`);
           return;
         }
 
@@ -972,8 +1097,17 @@ export class StreamingMessageManager {
             },
           ]);
 
-        // 創建選擇選單
-        // Discord 限制最多 25 個選項
+        // 問題不一定附帶選項；無選項時改成純文字回覆模式
+        if (!data.options || data.options.length === 0) {
+          await channel.send({
+            content: '請直接回覆這個問題的答案。',
+            embeds: [embed],
+          });
+          logger.info(`[StreamingMessageManager] Open question sent: ${data.questionId}`);
+          return;
+        }
+
+        // 創建選擇選單（Discord 限制最多 25 個選項）
         const maxOptions = Math.min(data.options.length, 25);
         const selectOptions = data.options.slice(0, maxOptions).map(option =>
           new StringSelectMenuOptionBuilder()
@@ -994,11 +1128,42 @@ export class StreamingMessageManager {
         // 發送到頻道
         await channel.send({ embeds: [embed], components: [actionRow] });
         logger.info(`[StreamingMessageManager] Question sent: ${data.questionId}`);
-
-        // 重新啟動 typing indicator（因為問題需要用戶回答）
-        targetStream!.typingTimer = this.startTypingIndicator(targetStream!.channelId);
       } catch (error) {
         logger.error('[StreamingMessageManager] 發送問題失敗:', error);
+      }
+    });
+  }
+
+  /**
+   * 處理 Thinking 事件
+   * @param data Thinking 事件
+   */
+  private async handleThinkingEvent(data: ThinkingEventData): Promise<void> {
+    const targetStream = this.findActiveStreamBySessionId(data.sessionId);
+    if (!targetStream) {
+      return;
+    }
+
+    this.refreshStreamTimeout(targetStream);
+
+    if (targetStream.hasSentThinkingNotice) {
+      return;
+    }
+
+    targetStream.hasSentThinkingNotice = true;
+
+    await this.rateLimiter.enqueue(async () => {
+      try {
+        const channel = await this.getChannel(targetStream.channelId, targetStream.discordClient);
+        if (!channel) {
+          logger.warn(`[StreamingMessageManager] 找不到頻道: ${targetStream.channelId}`);
+          return;
+        }
+
+        await channel.send({ content: '```思考中```' });
+        logger.info(`[StreamingMessageManager] Thinking notice sent: ${targetStream.sessionId}`);
+      } catch (error) {
+        logger.error('[StreamingMessageManager] 發送思考提示失敗:', error);
       }
     });
   }
@@ -1100,6 +1265,10 @@ export class StreamingMessageManager {
    * @param eventSessionId 事件中的 Session ID
    */
   private isSessionIdMatch(streamSessionId: string, eventSessionId: string): boolean {
+    if (!streamSessionId || !eventSessionId) {
+      return false;
+    }
+
     // 直接匹配
     if (streamSessionId === eventSessionId) {
       return true;
@@ -1120,6 +1289,45 @@ export class StreamingMessageManager {
     }
 
     return false;
+  }
+
+  /**
+   * 透過 Session ID 尋找活躍串流
+   */
+  private findActiveStreamBySessionId(sessionId: string): StreamingSession | undefined {
+    for (const stream of this.activeStreams.values()) {
+      if (this.isSessionIdMatch(stream.sessionId, sessionId)) {
+        return stream;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 解析 Session 對應的 Discord 頻道上下文
+   */
+  private resolveChannelContextForSession(
+    sessionId: string,
+    stream?: StreamingSession
+  ): { channelId: string; discordClient: Client } | null {
+    if (stream) {
+      return {
+        channelId: stream.channelId,
+        discordClient: stream.discordClient,
+      };
+    }
+
+    const normalizedSessionId = this.openCodeIdToSessionId.get(sessionId) || sessionId;
+    const threadManager = getThreadManager();
+    const threadId = threadManager.getThreadIdBySessionId(normalizedSessionId);
+    if (!threadId || !this.discordClient) {
+      return null;
+    }
+
+    return {
+      channelId: threadId,
+      discordClient: this.discordClient,
+    };
   }
 
   /**

@@ -448,22 +448,8 @@ async function getModelsFromSDK(guildId?: string): Promise<ModelDefinition[]> {
  */
 function convertSDKModelToDefinition(
   sdkModel: { id: string; cost: { input: number; output: number } },
-  _providerId: string
+  providerId: string
 ): ModelDefinition {
-  const [provider, ...nameParts] = sdkModel.id.split('/');
-  const name = nameParts.join('/') || sdkModel.id;
-  
-  // 根據名稱推斷類別
-  let category: 'fast' | 'balanced' | 'powerful' = 'balanced';
-  const lowerName = name.toLowerCase();
-  if (lowerName.includes('mini') || lowerName.includes('fast') || 
-      lowerName.includes('haiku') || lowerName.includes('nano') || lowerName.includes('lite')) {
-    category = 'fast';
-  } else if (lowerName.includes('pro') || lowerName.includes('opus') || 
-             lowerName.includes('large') || lowerName.includes('powerful')) {
-    category = 'powerful';
-  }
-  
   // 有效的提供商映射
   const validProviders: Record<string, ModelProvider> = {
     anthropic: 'anthropic',
@@ -477,11 +463,30 @@ function convertSDKModelToDefinition(
     'opencode-zen': 'opencode-zen',
     'github-copilot': 'github-copilot',
   };
-  
-  const mappedProvider = validProviders[provider] || 'opencode';
+
+  const rawId = sdkModel.id.trim();
+  const idHasProvider = rawId.includes('/');
+  const [providerFromId, ...nameParts] = rawId.split('/');
+  const providerCandidate = (idHasProvider ? providerFromId : providerId).trim();
+  const mappedProvider = validProviders[providerCandidate] || 'opencode';
+  const normalizedModelId = idHasProvider
+    ? rawId
+    : `${providerCandidate || mappedProvider}/${rawId}`;
+  const name = (idHasProvider ? nameParts.join('/') : rawId) || rawId;
+
+  // 根據名稱推斷類別
+  let category: 'fast' | 'balanced' | 'powerful' = 'balanced';
+  const lowerName = name.toLowerCase();
+  if (lowerName.includes('mini') || lowerName.includes('fast') || 
+      lowerName.includes('haiku') || lowerName.includes('nano') || lowerName.includes('lite')) {
+    category = 'fast';
+  } else if (lowerName.includes('pro') || lowerName.includes('opus') || 
+             lowerName.includes('large') || lowerName.includes('powerful')) {
+    category = 'powerful';
+  }
   
   return {
-    id: sdkModel.id,
+    id: normalizedModelId,
     provider: mappedProvider,
     name: name.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join(' '),
     description: `${name} 模型 (來自 SDK)`,
