@@ -18,6 +18,7 @@ import { TIMEOUTS } from '../config/constants.js';
 import logger from '../utils/logger.js';
 import * as Sentry from '@sentry/node';
 import { shouldCaptureError } from '../utils/sentryHelper.js';
+import { buttonRateLimiter, autocompleteRateLimiter } from '../utils/RateLimiter.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -34,6 +35,9 @@ import {
 } from '../services/index.js';
 
 // ==================== 全域錯誤處理 ====================
+
+let isShuttingDown = false;
+let shutdownPromise: Promise<void> | null = null;
 
 /**
  * 緊急關閉函數（用於未捕獲的異常）
@@ -98,6 +102,18 @@ process.on('uncaughtException', (error) => {
  * @param exitCode 退出代碼
  */
 async function shutdown(exitCode: number = 0): Promise<void> {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  if (isShuttingDown) {
+    logger.warn('[Shutdown] Shutdown already in progress');
+    return;
+  }
+
+  isShuttingDown = true;
+
+  shutdownPromise = (async () => {
   logger.info(`[Shutdown] Starting graceful shutdown (exit code: ${exitCode})`);
 
   try {
@@ -124,7 +140,18 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 3. 關閉 Discord 客戶端
+    // 3. 關閉 RateLimiter（由主 shutdown 統一管理）
+    try {
+      buttonRateLimiter.destroy();
+      autocompleteRateLimiter.destroy();
+      logger.info('[Shutdown] Rate limiters destroyed');
+    } catch (error) {
+      logger.error('[Shutdown] Error destroying rate limiters', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 4. 關閉 Discord 客戶端
     try {
       if (global.client?.isReady) {
         await global.client.destroy();
@@ -136,7 +163,7 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 4. 關閉 SDK Adapter
+    // 5. 關閉 SDK Adapter
     try {
       const { getOpenCodeSDKAdapter } = await import('../services/OpenCodeSDKAdapter.js');
       const sdkAdapter = getOpenCodeSDKAdapter();
@@ -148,7 +175,7 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 5. 關閉 Event Stream
+    // 6. 關閉 Event Stream
     try {
       const { getEventStreamAdapter } = await import('../services/EventStreamFactory.js');
       const eventStreamAdapter = getEventStreamAdapter();
@@ -160,7 +187,7 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 6. 關閉 SQLite 資料庫
+    // 7. 關閉 SQLite 資料庫
     try {
       const { SQLiteDatabase } = await import('../database/SQLiteDatabase.js');
       const db = SQLiteDatabase.getInstance();
@@ -174,7 +201,7 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 7. 關閉舊的 JSON 資料庫（向後相容）
+    // 8. 關閉舊的 JSON 資料庫（向後相容）
     try {
       const { Database } = await import('../database/index.js');
       await Database.getInstance().close();
@@ -185,7 +212,7 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 8. 刷新 Sentry 緩衝區
+    // 9. 刷新 Sentry 緩衝區
     try {
       await Sentry.flush(2000);
       logger.info('[Shutdown] Sentry flushed');
@@ -203,6 +230,9 @@ async function shutdown(exitCode: number = 0): Promise<void> {
   } finally {
     process.exit(exitCode);
   }
+  })();
+
+  return shutdownPromise;
 }
 
 // 全域 client 參考（用於關閉時存取）
@@ -211,12 +241,12 @@ declare global {
 }
 
 // 監聽終端訊號
-process.on('SIGINT', () => {
+process.once('SIGINT', () => {
   logger.info('[Process] Received SIGINT');
   shutdown(0);
 });
 
-process.on('SIGTERM', () => {
+process.once('SIGTERM', () => {
   logger.info('[Process] Received SIGTERM');
   shutdown(0);
 });

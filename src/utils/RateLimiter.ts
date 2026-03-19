@@ -37,10 +37,7 @@ export class RateLimiter {
     this.cleanupInterval = setInterval(() => {
       this.cleanup();
     }, 60000);
-
-    // Handle graceful shutdown
-    process.on('SIGINT', () => this.destroy());
-    process.on('SIGTERM', () => this.destroy());
+    this.cleanupInterval.unref();
   }
 
   /**
