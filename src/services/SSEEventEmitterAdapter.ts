@@ -99,8 +99,8 @@ export interface SDKEventProperties {
  * SDK 事件
  */
 export interface SDKEvent {
-  type: SDKEventType;
-  properties: SDKEventProperties;
+  type: string;
+  properties?: SDKEventProperties;
 }
 
 /**
@@ -115,7 +115,8 @@ export type SSEEventTypeInternal =
   | 'connected'
   | 'disconnected'
   | 'thinking'
-  | 'question';
+  | 'question'
+  | 'sdk_event';
 
 /**
  * 訊息事件數據（與 SSEClient 保持一致）
@@ -134,6 +135,9 @@ export interface ToolRequestEventData {
   toolName: string;
   args: Record<string, unknown>;
   requestId: string;
+  status?: 'pending' | 'running' | 'completed' | 'error';
+  result?: unknown;
+  error?: string;
 }
 
 /**
@@ -178,6 +182,15 @@ export interface ThinkingEventData {
 }
 
 /**
+ * 原始 SDK 事件（通用 fallback）
+ */
+export interface GenericSDKEventData {
+  sessionId: string;
+  eventType: string;
+  properties: SDKEventProperties;
+}
+
+/**
  * 內部 SSE 事件
  */
 export interface SSEEventInternal {
@@ -189,7 +202,8 @@ export interface SSEEventInternal {
     | ErrorEventData
     | SessionCompleteEventData
     | ThinkingEventData
-    | QuestionEventData;
+    | QuestionEventData
+    | GenericSDKEventData;
   timestamp: number;
 }
 
@@ -424,15 +438,24 @@ export class SSEEventEmitterAdapter
    * @param event SDK 事件
    */
   private handleSDKEvent(event: SDKEvent): void {
-    const internalType = EVENT_TYPE_MAP[event.type];
+    const internalType = EVENT_TYPE_MAP[event.type as SDKEventType];
+    const props = (event.properties && typeof event.properties === 'object'
+      ? event.properties
+      : {}) as SDKEventProperties;
+    const sessionId = props.session_id || props.sessionId || this.currentSessionId || '';
+
+    // 對每個 SDK 事件都發送一個通用事件，確保上層可觀測與擴展處理
+    this.emitEvent('sdk_event', {
+      sessionId,
+      eventType: event.type,
+      properties: props,
+    } as GenericSDKEventData);
 
     // null means we want to explicitly ignore this event
     // undefined means the event type is not recognized
     if (internalType === undefined) {
-      if (typeof event.type === 'string' && event.type.startsWith('file.watcher.')) {
-        return;
-      }
-      logger.warn(`[SSEEventEmitterAdapter] 未知的 SDK 事件類型: ${event.type}`);
+      // 未映射事件走通用 fallback，不視為錯誤
+      logger.debug(`[SSEEventEmitterAdapter] 未映射 SDK 事件類型: ${event.type}`);
       return;
     }
 
@@ -440,8 +463,6 @@ export class SSEEventEmitterAdapter
     if (internalType === null) {
       return;
     }
-
-    const props = event.properties;
 
     switch (internalType) {
       case 'message':
@@ -520,10 +541,13 @@ export class SSEEventEmitterAdapter
 
       case 'tool_request':
         this.emitEvent('tool_request', {
-          sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
-          toolName: props.tool_name || props.toolName || 'unknown',
+          sessionId,
+          toolName: this.extractToolName(props),
           args: props.tool_args || props.toolArgs || {},
           requestId: props.request_id || props.requestId || '',
+          status: this.inferToolStatus(event.type, props),
+          result: props.result,
+          error: typeof props.error === 'string' ? props.error : undefined,
         } as ToolRequestEventData);
         break;
 
@@ -595,6 +619,7 @@ export class SSEEventEmitterAdapter
       | SessionCompleteEventData
       | ThinkingEventData
       | QuestionEventData
+      | GenericSDKEventData
   ): void {
     const event: SSEEventInternal = {
       type,
@@ -605,9 +630,46 @@ export class SSEEventEmitterAdapter
     this.emit(type, event);
     this.emit('*', event); // 通配符事件
 
-    if (type !== 'message' && type !== 'thinking') {
+    if (type !== 'message' && type !== 'thinking' && type !== 'sdk_event') {
       logger.debug(`[SSEEventEmitterAdapter] 發送事件: ${type}`);
     }
+  }
+
+  /**
+   * 推導工具名稱（兼容不同 SDK payload）
+   */
+  private extractToolName(props: SDKEventProperties): string {
+    if (typeof props.tool_name === 'string' && props.tool_name.trim()) return props.tool_name;
+    if (typeof props.toolName === 'string' && props.toolName.trim()) return props.toolName;
+
+    const info = props.info && typeof props.info === 'object'
+      ? (props.info as Record<string, unknown>)
+      : null;
+    if (info) {
+      const byName = info.tool_name ?? info.toolName ?? info.name;
+      if (typeof byName === 'string' && byName.trim()) return byName;
+    }
+
+    return 'unknown';
+  }
+
+  /**
+   * 推導工具狀態（兼容 tool_call/tool_call_start/tool_call_end）
+   */
+  private inferToolStatus(
+    eventType: string,
+    props: SDKEventProperties
+  ): 'pending' | 'running' | 'completed' | 'error' {
+    const status = typeof props.status === 'string' ? props.status.toLowerCase() : '';
+    if (status === 'pending' || status === 'running' || status === 'completed' || status === 'error') {
+      return status;
+    }
+
+    if (eventType === 'tool_call_start') return 'running';
+    if (eventType === 'tool_call_end') {
+      return typeof props.error === 'string' && props.error.trim() ? 'error' : 'completed';
+    }
+    return 'pending';
   }
 
   /**

@@ -30,6 +30,7 @@ export type SSEEventType =
   | 'connected'
   | 'message'
   | 'tool_request'
+  | 'sdk_event'
   | 'thinking'
   | 'waiting'
   | 'error'
@@ -84,7 +85,7 @@ export interface ToolUpdateEventData {
   sessionId: string;
   toolId: string;
   toolName: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
+  status?: 'pending' | 'running' | 'completed' | 'error';
   args?: Record<string, unknown>;
   result?: unknown;
   error?: string;
@@ -117,6 +118,12 @@ export interface ThinkingEventData {
 
 interface ConnectionEventData {
   sessionId: string;
+}
+
+interface GenericSDKEventData {
+  sessionId: string;
+  eventType: string;
+  properties: Record<string, unknown>;
 }
 
 // ============== 類型定義 ==============
@@ -661,6 +668,14 @@ export class StreamingMessageManager {
       logger.debug('[StreamingMessageManager] SSE 連接成功');
     });
 
+    // 通用 SDK 事件 fallback，確保未映射事件也會刷新活動狀態
+    adapter.on('sdk_event', (event: unknown) => {
+      const data = (event as SSEEvent).data as GenericSDKEventData;
+      if (data?.sessionId) {
+        this.touchStreamBySession(data.sessionId);
+      }
+    });
+
     // 監聽斷開
     adapter.on('disconnected', (event: unknown) => {
       const data = (event as SSEEvent).data as ConnectionEventData;
@@ -835,15 +850,16 @@ export class StreamingMessageManager {
    */
   private handleToolRequestEvent(data: ToolUpdateEventData): void {
     this.touchStreamBySession(data.sessionId);
+    const normalizedStatus = data.status ?? 'pending';
 
     const toolStateTracker = getToolStateTracker();
 
     // 追蹤新的工具執行
-    if (data.status === 'pending') {
+    if (normalizedStatus === 'pending') {
       const toolExecution = toolStateTracker.trackTool(data.sessionId, data.toolName, data.args || {});
       this.queueToolStateUpdate(data.sessionId, toolExecution.id);
       logger.info(`[StreamingMessageManager] Tool requested: ${data.toolName} (${data.sessionId})`);
-    } else if (data.status === 'running') {
+    } else if (normalizedStatus === 'running') {
       // 嘗試找到現有的工具並更新狀態
       const existingTools = toolStateTracker.getSessionTools(data.sessionId);
       const existingTool = existingTools.find(t => t.toolName === data.toolName && t.status === 'pending');
@@ -851,14 +867,14 @@ export class StreamingMessageManager {
         toolStateTracker.startTool(data.sessionId, existingTool.id);
         this.queueToolStateUpdate(data.sessionId, existingTool.id);
       }
-    } else if (data.status === 'completed') {
+    } else if (normalizedStatus === 'completed') {
       const existingTools = toolStateTracker.getSessionTools(data.sessionId);
       const existingTool = existingTools.find(t => t.toolName === data.toolName && t.status === 'running');
       if (existingTool) {
         toolStateTracker.completeTool(data.sessionId, existingTool.id, data.result);
         this.queueToolStateUpdate(data.sessionId, existingTool.id);
       }
-    } else if (data.status === 'error') {
+    } else if (normalizedStatus === 'error') {
       const existingTools = toolStateTracker.getSessionTools(data.sessionId);
       const existingTool = existingTools.find(t => t.toolName === data.toolName);
       if (existingTool) {
@@ -972,7 +988,15 @@ export class StreamingMessageManager {
             continue;
           }
 
-          const message = await channel.send({ content: `工具調用：${tool.toolName}` });
+          const argsJson = this.safeStringify(tool.args ?? {}, 1200);
+          const formatted = [
+            `${tool.toolName}(調用信息)`,
+            '```json',
+            argsJson,
+            '```',
+          ].join('\n');
+
+          const message = await channel.send({ content: formatted.slice(0, MAX_MESSAGE_LENGTH) });
           this.toolMessageMap.set(toolKey, message.id);
           logger.debug(`[StreamingMessageManager] Tool invocation sent: ${tool.toolName} (${tool.status})`);
         }
@@ -1252,6 +1276,21 @@ export class StreamingMessageManager {
     for (const stream of streams) {
       this.stopTypingIndicator(stream);
       this.cleanupStream(stream.sessionId, stream.channelId);
+    }
+  }
+
+  /**
+   * 安全 JSON 序列化，避免循環引用造成發送失敗
+   */
+  private safeStringify(value: unknown, maxLength = 1200): string {
+    try {
+      const text = JSON.stringify(value, null, 2) || '{}';
+      if (text.length <= maxLength) {
+        return text;
+      }
+      return `${text.slice(0, maxLength)}\n...`;
+    } catch {
+      return '{"error":"unable to stringify args"}';
     }
   }
 
