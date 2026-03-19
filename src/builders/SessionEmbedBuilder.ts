@@ -47,6 +47,8 @@ export class SessionStatusEmbedBuilder {
     prompt: string;
     /** 模型 */
     model: string;
+    /** Agent */
+    agent?: string;
     /** 狀態 */
     status: SessionStatus;
     /** 專案路徑 */
@@ -54,8 +56,8 @@ export class SessionStatusEmbedBuilder {
     /** 運行時長（毫秒） */
     duration?: number;
   }): EmbedBuilder {
-    const { sessionId, prompt, model, status, projectPath, duration } = options;
-    const statusConfig = StatusConfig[status];
+    const { sessionId, prompt, model, agent, status, projectPath, duration } = options;
+    const statusConfig = SessionStatusEmbedBuilder.getStatusConfig(status);
 
     const embed = new EmbedBuilder()
       .setColor(statusConfig.color)
@@ -67,6 +69,14 @@ export class SessionStatusEmbedBuilder {
         { name: '🤖 模型', value: model, inline: true },
         { name: '📊 狀態', value: `${statusConfig.emoji} ${statusConfig.text}`, inline: true }
       );
+
+    if (agent) {
+      embed.addFields({
+        name: '🧠 Agent',
+        value: agent,
+        inline: true,
+      });
+    }
 
     if (projectPath) {
       embed.addFields({
@@ -100,7 +110,7 @@ export class SessionStatusEmbedBuilder {
     prompt?: string;
   }): EmbedBuilder {
     const { sessionId, status, prompt } = options;
-    const statusConfig = StatusConfig[status];
+    const statusConfig = SessionStatusEmbedBuilder.getStatusConfig(status);
 
     return new EmbedBuilder()
       .setColor(statusConfig.color)
@@ -179,7 +189,7 @@ export class SessionStatusEmbedBuilder {
     // 添加每個 Session 的字段
     for (const session of sessions.slice(0, 10)) {
       // 最多顯示 10 個
-      const statusConfig = StatusConfig[session.status];
+      const statusConfig = SessionStatusEmbedBuilder.getStatusConfig(session.status);
       const startedDate = new Date(session.startedAt).toLocaleString('zh-TW');
       const duration = session.endedAt
         ? SessionStatusEmbedBuilder.formatDuration(
@@ -210,7 +220,7 @@ export class SessionStatusEmbedBuilder {
    * 創建 Session 詳細資訊卡片
    */
   static createSessionDetailCard(session: Session): EmbedBuilder {
-    const statusConfig = StatusConfig[session.status];
+    const statusConfig = SessionStatusEmbedBuilder.getStatusConfig(session.status);
     const duration = session.getDuration();
 
     const embed = new EmbedBuilder()
@@ -220,8 +230,8 @@ export class SessionStatusEmbedBuilder {
       .addFields(
         { name: '🆔 Session ID', value: `\`${session.sessionId}\``, inline: true },
         { name: '📊 狀態', value: `${statusConfig.emoji} ${statusConfig.text}`, inline: true },
-        { name: '🤖 模型', value: session.model, inline: true },
-        { name: '🔧 Agent', value: session.agent, inline: true }
+        { name: '🤖 模型', value: session.model || 'unknown', inline: true },
+        { name: '🔧 Agent', value: session.agent || 'general', inline: true }
       );
 
     if (session.prompt) {
@@ -283,7 +293,7 @@ export class SessionStatusEmbedBuilder {
    * 創建 Session 運行狀態實時卡片
    */
   static createSessionLiveStatusCard(session: Session): EmbedBuilder {
-    const statusConfig = StatusConfig[session.status];
+    const statusConfig = SessionStatusEmbedBuilder.getStatusConfig(session.status);
     const duration = session.getDuration();
 
     return new EmbedBuilder()
@@ -294,10 +304,41 @@ export class SessionStatusEmbedBuilder {
         { name: '🆔 Session ID', value: `\`${session.sessionId}\``, inline: true },
         { name: '📊 狀態', value: `${statusConfig.emoji} ${statusConfig.text}`, inline: true },
         { name: '⏱️ 運行時長', value: SessionStatusEmbedBuilder.formatDuration(duration), inline: true },
-        { name: '🤖 模型', value: session.model, inline: true },
+        { name: '🤖 模型', value: session.model || 'unknown', inline: true },
         { name: '💬 訊息', value: `${session.messageCount}`, inline: true },
         { name: '🔧 工具', value: `${session.toolCallCount}`, inline: true }
       );
+  }
+
+  /**
+   * 創建主頻道 Session 狀態卡（可重複更新）
+   */
+  static createSessionChannelStatusCard(
+    session: Session,
+    options?: {
+      threadId?: string | null;
+      note?: string;
+    }
+  ): EmbedBuilder {
+    const statusConfig = SessionStatusEmbedBuilder.getStatusConfig(session.status);
+    const duration = session.getDuration();
+    const threadMention = options?.threadId ? `<#${options.threadId}>` : '未建立';
+
+    const embed = new EmbedBuilder()
+      .setColor(statusConfig.color)
+      .setTitle('📌 Session 狀態')
+      .setDescription(options?.note || '可使用下方按鈕管理此 Session')
+      .setTimestamp()
+      .addFields(
+        { name: '🆔 Session ID', value: `\`${session.sessionId}\``, inline: true },
+        { name: '📊 狀態', value: `${statusConfig.emoji} ${statusConfig.text}`, inline: true },
+        { name: '⏱️ 運行時長', value: SessionStatusEmbedBuilder.formatDuration(duration), inline: true },
+        { name: '🤖 模型', value: session.model || 'unknown', inline: true },
+        { name: '🧠 Agent', value: session.agent || 'general', inline: true },
+        { name: '🧵 討論串', value: threadMention, inline: true },
+      );
+
+    return embed;
   }
 
   /**
@@ -385,6 +426,17 @@ export class SessionStatusEmbedBuilder {
     const truncatedName = SessionStatusEmbedBuilder.truncate(name, 256); // Field name limit
     const truncatedValue = SessionStatusEmbedBuilder.truncateFieldValue(value);
     return embed.addFields({ name: truncatedName, value: truncatedValue, inline });
+  }
+
+  /**
+   * 取得狀態配置（含未知狀態 fallback）
+   */
+  private static getStatusConfig(status: string): { emoji: string; text: string; color: ColorResolvable } {
+    const config = (StatusConfig as Record<string, { emoji: string; text: string; color: ColorResolvable }>)[status];
+    if (config) {
+      return config;
+    }
+    return StatusConfig.running;
   }
 
   /**

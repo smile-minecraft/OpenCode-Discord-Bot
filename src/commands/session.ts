@@ -7,6 +7,7 @@
  * - /session list - 列出所有 Sessions
  * - /session resume - 恢復 Session
  * - /session abort - 終止 Session
+ * - /session settings - 更新 Session 模型/Agent
  */
 
 import {
@@ -17,6 +18,7 @@ import {
   MessageFlags,
   TextChannel,
   NewsChannel,
+  Message,
 } from 'discord.js';
 import { SessionManager } from '../services/SessionManager.js';
 import { getThreadManager } from '../services/ThreadManager.js';
@@ -24,8 +26,11 @@ import { getSessionEventManager } from '../services/SessionEventManager.js';
 import { getStreamingMessageManager, type SSEEventEmitterAdapter } from '../services/StreamingMessageManager.js';
 import { getOpenCodeSDKAdapter } from '../services/OpenCodeSDKAdapter.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
+import { createSessionActionRow, createSessionManagementRow } from '../builders/SessionActionRowBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import type { ModelDefinition } from '../models/ModelData.js';
+import { AGENTS } from '../models/AgentData.js';
+import type { Session } from '../database/models/Session.js';
 import { MODEL_CONFIG } from '../config/constants.js';
 import { captureCommandError } from '../utils/sentryHelper.js';
 import logger from '../utils/logger.js';
@@ -42,7 +47,8 @@ export function createSessionCommand(): SlashCommandBuilder {
     .addSubcommand(createStartSubcommand())
     .addSubcommand(createListSubcommand())
     .addSubcommand(createResumeSubcommand())
-    .addSubcommand(createAbortSubcommand()) as SlashCommandBuilder;
+    .addSubcommand(createAbortSubcommand())
+    .addSubcommand(createSettingsSubcommand()) as SlashCommandBuilder;
 }
 
 /**
@@ -115,6 +121,35 @@ function createAbortSubcommand(): SlashCommandSubcommandBuilder {
         .setName('session_id')
         .setDescription('要終止的 Session ID')
         .setRequired(false)
+    );
+}
+
+/**
+ * 創建 settings 子命令
+ */
+function createSettingsSubcommand(): SlashCommandSubcommandBuilder {
+  return new SlashCommandSubcommandBuilder()
+    .setName('settings')
+    .setDescription('更新 Session 的模型與 Agent 設定')
+    .addStringOption((option) =>
+      option
+        .setName('session_id')
+        .setDescription('要更新的 Session ID（不填則使用當前頻道活躍 Session）')
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('model')
+        .setDescription('設定模型')
+        .setRequired(false)
+        .setAutocomplete(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('agent')
+        .setDescription('設定 Agent')
+        .setRequired(false)
+        .addChoices(...AGENTS.map((agent) => ({ name: `${agent.name} (${agent.id})`, value: agent.id })))
     );
 }
 
@@ -199,6 +234,9 @@ export async function handleSessionCommand(
     case 'abort':
       await handleAbortCommand(interaction, sessionManager);
       break;
+    case 'settings':
+      await handleSettingsCommand(interaction, sessionManager);
+      break;
     default:
       await interaction.reply({
         content: '未知的子命令',
@@ -275,13 +313,13 @@ async function handleStartCommand(
       sessionId: session.sessionId,
       prompt: session.prompt,
       model: session.model,
+      agent: session.agent,
       status: session.status,
       projectPath: session.projectPath,
       duration: session.getDuration(),
     });
 
     // 構建操作按鈕
-    const { createSessionActionRow } = await import('../builders/SessionActionRowBuilder.js');
     const components = createSessionActionRow(session.sessionId, session.status);
 
     // 發送到 Thread 而不是直接回覆互動
@@ -334,10 +372,24 @@ async function handleStartCommand(
       }
     }
 
-    // 回覆互動，提供 Thread 連結
+    // 回覆互動（主頻道狀態卡 + 管理按鈕）
+    const statusEmbed = SessionStatusEmbedBuilder.createSessionChannelStatusCard(session, {
+      threadId,
+      note: 'Session 已啟動，請到討論串中持續對話',
+    });
+    const statusRow = createSessionManagementRow(session.sessionId);
+
     await interaction.editReply({
       content: `✅ Session 已啟動！請在 Thread 中繼續對話：${thread?.toString() || ''}`,
+      embeds: [statusEmbed],
+      components: [statusRow],
     });
+
+    // 記錄主頻道狀態訊息 ID，供後續動態更新
+    const reply = await interaction.fetchReply() as Message;
+    (session.metadata as Record<string, unknown>).statusMessageId = reply.id;
+    (session.metadata as Record<string, unknown>).statusChannelId = interaction.channelId;
+    await sessionManager.updateSession(session);
   } catch (error) {
     // 捕獲錯誤到 Sentry
     if (error instanceof Error) {
@@ -439,13 +491,14 @@ async function handleResumeCommand(
     });
 
     // 構建操作按鈕
-    const { createSessionActionRow } = await import('../builders/SessionActionRowBuilder.js');
     const components = createSessionActionRow(session.sessionId, session.status);
 
     await interaction.editReply({
       embeds: [embed],
       components: [components],
     });
+
+    await refreshSessionStatusMessage(interaction, session, 'Session 已恢復');
   } catch (error) {
     // 捕獲錯誤到 Sentry
     if (error instanceof Error) {
@@ -496,6 +549,8 @@ async function handleAbortCommand(
       embeds: [embed],
       components: [], // 移除操作按鈕
     });
+
+    await refreshSessionStatusMessage(interaction, session, 'Session 已終止');
   } catch (error) {
     // 捕獲錯誤到 Sentry
     if (error instanceof Error) {
@@ -510,6 +565,104 @@ async function handleAbortCommand(
     const errorMessage = error instanceof Error ? error.message : '未知錯誤';
     await interaction.editReply({
       content: `❌ 終止 Session 失敗: ${errorMessage}`,
+    });
+  }
+}
+
+/**
+ * 處理 settings 子命令
+ */
+async function handleSettingsCommand(
+  interaction: ChatInputCommandInteraction,
+  sessionManager: SessionManager
+): Promise<void> {
+  await interaction.deferReply({
+    flags: [MessageFlags.Ephemeral],
+  });
+
+  const inputSessionId = interaction.options.getString('session_id');
+  const model = interaction.options.getString('model');
+  const agent = interaction.options.getString('agent');
+
+  if (!model && !agent) {
+    await interaction.editReply({
+      content: '⚠️ 請至少提供 `model` 或 `agent` 其中一個設定',
+    });
+    return;
+  }
+
+  const targetSessionId = inputSessionId || sessionManager.getActiveSessionByChannel(interaction.channelId)?.sessionId;
+  if (!targetSessionId) {
+    await interaction.editReply({
+      content: '❌ 此頻道沒有可更新的活躍 Session，請先使用 `/session start`',
+    });
+    return;
+  }
+
+  try {
+    const session = await sessionManager.updateSessionSettings(targetSessionId, {
+      model: model || undefined,
+      agent: agent || undefined,
+    });
+
+    if (!session) {
+      await interaction.editReply({
+        content: `❌ 找不到 Session：\`${targetSessionId}\``,
+      });
+      return;
+    }
+
+    await refreshSessionStatusMessage(interaction, session, 'Session 設定已更新');
+
+    await interaction.editReply({
+      content: `✅ Session 設定已更新\n模型：\`${session.model}\`\nAgent：\`${session.agent}\``,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+    await interaction.editReply({
+      content: `❌ 更新 Session 設定失敗: ${errorMessage}`,
+    });
+  }
+}
+
+/**
+ * 更新主頻道 Session 狀態訊息
+ */
+async function refreshSessionStatusMessage(
+  interaction: ChatInputCommandInteraction,
+  session: Session,
+  note?: string
+): Promise<void> {
+  try {
+    const statusMessageId = (session.metadata as Record<string, unknown>)?.statusMessageId;
+    if (!statusMessageId || typeof statusMessageId !== 'string') {
+      return;
+    }
+
+    const statusChannel = await interaction.client.channels.fetch(session.channelId);
+    if (!statusChannel || !('messages' in statusChannel)) {
+      return;
+    }
+
+    const message = await statusChannel.messages.fetch(statusMessageId);
+    if (!message) {
+      return;
+    }
+
+    const embed = SessionStatusEmbedBuilder.createSessionChannelStatusCard(session, {
+      threadId: session.threadId || null,
+      note: note || 'Session 狀態已更新',
+    });
+    const row = createSessionManagementRow(session.sessionId);
+
+    await message.edit({
+      embeds: [embed],
+      components: [row],
+    });
+  } catch (error) {
+    logger.warn('[SessionCommand] 更新主頻道狀態訊息失敗', {
+      error: error instanceof Error ? error.message : String(error),
+      sessionId: session.sessionId,
     });
   }
 }

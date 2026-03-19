@@ -25,6 +25,7 @@ import {
   type ChatInputCommandInteraction,
   type ButtonInteraction,
   type AutocompleteInteraction,
+  PermissionFlagsBits,
   EmbedBuilder,
   StringSelectMenuOptionBuilder,
   StringSelectMenuBuilder,
@@ -61,6 +62,9 @@ import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
 import { getModelsByProviderDynamic } from '../services/ModelService.js';
 import { AGENTS } from '../models/AgentData.js';
 import { Colors } from '../builders/EmbedBuilder.js';
+import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
+import { createSessionManagementRow } from '../builders/SessionActionRowBuilder.js';
+import type { Session } from '../database/models/Session.js';
 
 /**
  * Client 選項配置
@@ -828,8 +832,170 @@ export class DiscordClient extends Client {
       description: '處理 AI 提問的選擇',
     });
 
+    // === Session Settings: Model Select ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'session:settings:model:',
+      callback: async (interaction) => {
+        await interaction.deferReply({ flags: ['Ephemeral'] });
+
+        try {
+          const parts = interaction.customId.split(':');
+          if (parts.length < 4) {
+            throw new Error('無效的 Session 設定 ID');
+          }
+
+          const sessionId = parts.slice(3).join(':');
+          const selectedModel = interaction.values[0];
+
+          if (!selectedModel || selectedModel === 'no-models') {
+            await interaction.editReply({
+              content: '⚠️ 目前沒有可用模型可設定',
+            });
+            return;
+          }
+
+          const session = await this.sessionManager.findSession(sessionId);
+          if (!session) {
+            await interaction.editReply({
+              content: `❌ 找不到 Session：\`${sessionId}\``,
+            });
+            return;
+          }
+
+          // Session 擁有者或管理員可操作
+          if (session.userId !== interaction.user.id) {
+            const member = await interaction.guild?.members.fetch(interaction.user.id);
+            const isAdmin = member?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
+            if (!isAdmin) {
+              await interaction.editReply({
+                content: '❌ 只有 Session 擁有者或管理員可以修改設定',
+              });
+              return;
+            }
+          }
+
+          const updated = await this.sessionManager.updateSessionSettings(sessionId, {
+            model: selectedModel,
+          });
+          if (!updated) {
+            await interaction.editReply({
+              content: `❌ 無法更新 Session：\`${sessionId}\``,
+            });
+            return;
+          }
+
+          await this.updateSessionStatusCard(updated, 'Session 模型已更新');
+
+          await interaction.editReply({
+            content: `✅ 模型已更新為 \`${updated.model}\``,
+          });
+        } catch (error) {
+          await interaction.editReply({
+            content: `❌ 更新模型失敗: ${error instanceof Error ? error.message : '未知錯誤'}`,
+          });
+        }
+      },
+      description: '更新 Session 模型設定',
+    });
+
+    // === Session Settings: Agent Select ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'session:settings:agent:',
+      callback: async (interaction) => {
+        await interaction.deferReply({ flags: ['Ephemeral'] });
+
+        try {
+          const parts = interaction.customId.split(':');
+          if (parts.length < 4) {
+            throw new Error('無效的 Session 設定 ID');
+          }
+
+          const sessionId = parts.slice(3).join(':');
+          const selectedAgent = interaction.values[0];
+
+          const session = await this.sessionManager.findSession(sessionId);
+          if (!session) {
+            await interaction.editReply({
+              content: `❌ 找不到 Session：\`${sessionId}\``,
+            });
+            return;
+          }
+
+          if (session.userId !== interaction.user.id) {
+            const member = await interaction.guild?.members.fetch(interaction.user.id);
+            const isAdmin = member?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
+            if (!isAdmin) {
+              await interaction.editReply({
+                content: '❌ 只有 Session 擁有者或管理員可以修改設定',
+              });
+              return;
+            }
+          }
+
+          const updated = await this.sessionManager.updateSessionSettings(sessionId, {
+            agent: selectedAgent,
+          });
+          if (!updated) {
+            await interaction.editReply({
+              content: `❌ 無法更新 Session：\`${sessionId}\``,
+            });
+            return;
+          }
+
+          await this.updateSessionStatusCard(updated, 'Session Agent 已更新');
+
+          await interaction.editReply({
+            content: `✅ Agent 已更新為 \`${updated.agent}\``,
+          });
+        } catch (error) {
+          await interaction.editReply({
+            content: `❌ 更新 Agent 失敗: ${error instanceof Error ? error.message : '未知錯誤'}`,
+          });
+        }
+      },
+      description: '更新 Session Agent 設定',
+    });
+
     const stats = this.selectMenuHandler.getStats();
     logger.info(`[SelectMenuHandler] Registered handlers: ${JSON.stringify(stats)}`);
+  }
+
+  /**
+   * 更新主頻道 Session 狀態卡
+   */
+  private async updateSessionStatusCard(session: Session, note?: string): Promise<void> {
+    try {
+      const statusMessageId = (session.metadata as Record<string, unknown>)?.statusMessageId;
+      if (!statusMessageId || typeof statusMessageId !== 'string') {
+        return;
+      }
+
+      const channel = await this.channels.fetch(session.channelId);
+      if (!channel || !('messages' in channel)) {
+        return;
+      }
+
+      const message = await channel.messages.fetch(statusMessageId);
+      if (!message) {
+        return;
+      }
+
+      const embed = SessionStatusEmbedBuilder.createSessionChannelStatusCard(session, {
+        threadId: session.threadId,
+        note,
+      });
+      const row = createSessionManagementRow(session.sessionId);
+
+      await message.edit({
+        embeds: [embed],
+        components: [row],
+      });
+    } catch (error) {
+      logger.warn('[Client] 更新 Session 狀態卡失敗', {
+        error: error instanceof Error ? error.message : String(error),
+        sessionId: session.sessionId,
+      });
+    }
   }
 
   /**
@@ -1061,10 +1227,10 @@ export class DiscordClient extends Client {
     try {
       switch (commandName) {
         case 'session':
-          // 處理 session start 的 model 選項自動完成
-          if (subcommandName === 'start') {
+          {
             const focusedOption = interaction.options.getFocused(true);
-            if (focusedOption.name === 'model') {
+            // session start/settings 都支援 model autocomplete
+            if ((subcommandName === 'start' || subcommandName === 'settings') && focusedOption.name === 'model') {
               await handleSessionModelAutocomplete(interaction);
               return;
             }

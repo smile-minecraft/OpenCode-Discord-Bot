@@ -400,6 +400,10 @@ export async function getModelByIdAsync(id: string, guildId?: string): Promise<M
  * @returns 默認模型 ID
  */
 export function getDefaultModel(): string {
+  const envDefaultModel = process.env.OPENCODE_DEFAULT_MODEL;
+  if (typeof envDefaultModel === 'string' && envDefaultModel.trim() !== '') {
+    return envDefaultModel.trim();
+  }
   return DEFAULT_MODEL;
 }
 

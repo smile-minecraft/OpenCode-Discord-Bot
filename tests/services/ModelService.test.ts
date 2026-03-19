@@ -39,6 +39,7 @@ import {
   clearModelCache,
   __test__ 
 } from '../../src/services/ModelService';
+import { DEFAULT_MODEL } from '../../src/models/ModelData';
 
 import { getInitializedSDKAdapter, SDKAdapterError } from '../../src/services/OpenCodeSDKAdapter';
 
@@ -59,6 +60,7 @@ describe('ModelService', () => {
     // Clean up environment variables
     delete process.env.OPENCODE_API_KEY;
     delete process.env.OPENCODE_MODELS;
+    delete process.env.OPENCODE_DEFAULT_MODEL;
   });
 
   describe('convertToModelDefinition() - 轉換模型定義', () => {
@@ -340,10 +342,20 @@ describe('ModelService', () => {
   });
 
   describe('getDefaultModel() - 獲取默認模型', () => {
-    it('應該返回默認模型 ID', () => {
+    it('有 OPENCODE_DEFAULT_MODEL 時應該返回自訂模型 ID', () => {
+      process.env.OPENCODE_DEFAULT_MODEL = 'openai/gpt-4o';
+
       const defaultModel = getDefaultModel();
-      
-      expect(defaultModel).toBe('anthropic/claude-sonnet-4-20250514');
+
+      expect(defaultModel).toBe('openai/gpt-4o');
+    });
+
+    it('沒有 OPENCODE_DEFAULT_MODEL 時應該回退到系統默認模型', () => {
+      delete process.env.OPENCODE_DEFAULT_MODEL;
+
+      const defaultModel = getDefaultModel();
+
+      expect(defaultModel).toBe(DEFAULT_MODEL);
     });
   });
 

@@ -679,6 +679,49 @@ export class ThreadManager {
   }
 
   /**
+   * 刪除 Discord Thread（實際刪除頻道）
+   * @param threadId Discord Thread ID
+   * @throws ThreadMappingError 如果刪除失敗
+   */
+  async deleteDiscordThread(threadId: string): Promise<void> {
+    try {
+      const thread = await this.fetchThreadChannel(threadId);
+
+      if (thread) {
+        await thread.delete('Session terminated');
+        logger.info(`[ThreadManager] Discord thread ${threadId} 已刪除`);
+      } else {
+        logger.warn(`[ThreadManager] 無法找到 Discord thread ${threadId}，視為已刪除`);
+      }
+    } catch (error) {
+      logger.error(`[ThreadManager] 刪除 Discord thread ${threadId} 失敗:`, error);
+      throw new ThreadMappingError(
+        error instanceof Error ? error.message : String(error),
+        threadId
+      );
+    }
+  }
+
+  /**
+   * 刪除 Session 關聯 Thread（刪除 Discord thread + 清除映射）
+   * @param sessionId Session ID
+   */
+  async deleteSessionThread(sessionId: string): Promise<void> {
+    const threadId = this.sessionToThread.get(sessionId);
+
+    if (!threadId) {
+      logger.warn(`[ThreadManager] Session ${sessionId} 沒有關聯的 thread`);
+      return;
+    }
+
+    try {
+      await this.deleteDiscordThread(threadId);
+    } finally {
+      this.deleteThread(sessionId);
+    }
+  }
+
+  /**
    * 獲取 ThreadChannel
    * @param threadId Discord Thread ID
    * @returns ThreadChannel 或 null（如果未找到或非 Thread 類型）

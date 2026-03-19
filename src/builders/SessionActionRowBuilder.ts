@@ -23,6 +23,7 @@ export const SessionButtonIds = {
 
   // 狀態相關
   STATUS: 'session:status',
+  SETTINGS: 'session:settings',
   LIST: 'session:list',
 
   // 專案相關
@@ -49,6 +50,7 @@ export type SessionButtonId =
   | typeof SessionButtonIds.PAUSE
   | typeof SessionButtonIds.RESTART
   | typeof SessionButtonIds.STATUS
+  | typeof SessionButtonIds.SETTINGS
   | typeof SessionButtonIds.LIST
   | typeof SessionButtonIds.PROJECT_SELECT
   | typeof SessionButtonIds.PROJECT_SETTINGS
@@ -81,7 +83,7 @@ export class SessionButtonFactory {
   static createStopButton(customId?: string): ButtonBuilder {
     return new ButtonBuilder()
       .setCustomId(customId || SessionButtonIds.STOP)
-      .setLabel('停止')
+      .setLabel('結束')
       .setStyle(ButtonStyle.Danger)
       .setEmoji('⏹️');
   }
@@ -103,7 +105,7 @@ export class SessionButtonFactory {
   static createPauseButton(customId?: string): ButtonBuilder {
     return new ButtonBuilder()
       .setCustomId(customId || SessionButtonIds.PAUSE)
-      .setLabel('暫停')
+      .setLabel('中斷')
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('⏸️');
   }
@@ -128,6 +130,17 @@ export class SessionButtonFactory {
       .setLabel('查看狀態')
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('📊');
+  }
+
+  /**
+   * 創建 Session 設定按鈕
+   */
+  static createSettingsButton(customId?: string): ButtonBuilder {
+    return new ButtonBuilder()
+      .setCustomId(customId || SessionButtonIds.SETTINGS)
+      .setLabel('設定')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('⚙️');
   }
 
   /**
@@ -175,6 +188,17 @@ export class SessionButtonFactory {
       .setLabel('分享')
       .setStyle(ButtonStyle.Secondary)
       .setEmoji('📤');
+  }
+
+  /**
+   * 創建刪除 Session 按鈕
+   */
+  static createDeleteButton(customId?: string): ButtonBuilder {
+    return new ButtonBuilder()
+      .setCustomId(customId || SessionButtonIds.DELETE)
+      .setLabel('刪除 Session')
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji('🗑️');
   }
 }
 
@@ -274,6 +298,17 @@ export function createSessionMainRow(sessionId?: string): ActionRowBuilder<Butto
 }
 
 /**
+ * 創建主頻道 Session 管理按鈕行（狀態/設定/刪除）
+ */
+export function createSessionManagementRow(sessionId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    SessionButtonFactory.createStatusButton(`session:status:${sessionId}`),
+    SessionButtonFactory.createSettingsButton(`session:settings:${sessionId}`),
+    SessionButtonFactory.createDeleteButton(`session:stop:${sessionId}`),
+  );
+}
+
+/**
  * 創建 Session 設定按鈕行（模型選擇/專案設定）
  */
 export function createSessionSettingsRow(): ActionRowBuilder<ButtonBuilder> {
@@ -291,5 +326,6 @@ export default {
   createSessionActionRow,
   createSessionControlRow,
   createSessionMainRow,
+  createSessionManagementRow,
   createSessionSettingsRow,
 };

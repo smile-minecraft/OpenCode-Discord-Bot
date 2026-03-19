@@ -300,6 +300,15 @@ export interface SessionExecutionResult {
       return null;
     }
 
+    // 先嘗試通知 SDK 中止執行，避免遠端仍在運行
+    if (session.opencodeSessionId) {
+      try {
+        await this.sdkAdapter.abortSession({ sessionId: session.opencodeSessionId });
+      } catch (sdkError) {
+        logger.warn(`[SessionManager] SDK abort failed for ${sessionId}:`, sdkError);
+      }
+    }
+
     // 注意：在單一伺服器架構下，我們不會停止伺服器
     // 因為其他 Session 可能仍在使用
     // 伺服器會在應用關閉時統一停止
@@ -347,6 +356,129 @@ export interface SessionExecutionResult {
       this.sessionEventManager.unsubscribe(sessionId);
     } catch (unsubscribeError) {
       logger.warn(`[SessionManager] 取消 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
+    }
+
+    return session;
+  }
+
+  /**
+   * 中斷 Session（不刪除 Session，僅停止當前推理並標記 paused）
+   * @param sessionId Session ID
+   */
+  async interruptSession(sessionId: string): Promise<Session | null> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (session.opencodeSessionId) {
+      await this.sdkAdapter.abortSession({ sessionId: session.opencodeSessionId });
+    }
+
+    session.pause();
+    await this.saveSession(session);
+
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for interrupted session ${sessionId}:`, streamingError);
+      }
+    }
+
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 中斷 Session ${sessionId} 取消訂閱失敗:`, unsubscribeError);
+    }
+
+    return session;
+  }
+
+  /**
+   * 終止並刪除 Session（含 SDK Session）
+   * @param sessionId Session ID
+   * @param options 刪除選項
+   */
+  async terminateAndDeleteSession(
+    sessionId: string,
+    options: {
+      /** 是否同時刪除 Discord thread，預設 true */
+      deleteThread?: boolean;
+    } = {}
+  ): Promise<Session | null> {
+    const { deleteThread = true } = options;
+
+    let session = this.activeSessions.get(sessionId) || null;
+    if (!session) {
+      session = await this.loadSession(sessionId);
+    }
+    if (!session) {
+      return null;
+    }
+
+    if (session.opencodeSessionId) {
+      try {
+        await this.sdkAdapter.abortSession({ sessionId: session.opencodeSessionId });
+      } catch (abortError) {
+        logger.warn(`[SessionManager] SDK abort before delete failed for ${sessionId}:`, abortError);
+      }
+
+      try {
+        await this.sdkAdapter.deleteSession({ sessionId: session.opencodeSessionId });
+      } catch (deleteError) {
+        logger.warn(`[SessionManager] SDK delete failed for ${sessionId}:`, deleteError);
+      }
+    }
+
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for deleted session ${sessionId}:`, streamingError);
+      }
+    }
+
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 刪除 Session ${sessionId} 取消訂閱失敗:`, unsubscribeError);
+    }
+
+    try {
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        if (deleteThread) {
+          await threadManager.deleteSessionThread(sessionId);
+          session.threadId = null;
+        } else {
+          await threadManager.cleanupSession(sessionId);
+        }
+      }
+    } catch (threadError) {
+      logger.warn(`[SessionManager] Session ${sessionId} thread delete/cleanup failed:`, threadError);
+    }
+
+    session.abort();
+    await this.saveSession(session);
+
+    this.activeSessions.delete(sessionId);
+    const channelSessionSet = this.channelSessions.get(session.channelId);
+    if (channelSessionSet) {
+      channelSessionSet.delete(sessionId);
+      if (channelSessionSet.size === 0) {
+        this.channelSessions.delete(session.channelId);
+      }
+    }
+
+    if (this.sqliteDb.isReady()) {
+      try {
+        this.sqliteDb.deleteSession(sessionId);
+      } catch (dbError) {
+        logger.warn(`[SessionManager] Database delete failed for session ${sessionId}:`, dbError);
+      }
     }
 
     return session;
@@ -448,6 +580,18 @@ export interface SessionExecutionResult {
   }
 
   /**
+   * 查詢 Session（優先記憶體，找不到則嘗試資料庫）
+   * @param sessionId Session ID
+   */
+  async findSession(sessionId: string): Promise<Session | null> {
+    const active = this.activeSessions.get(sessionId);
+    if (active) {
+      return active;
+    }
+    return this.loadSession(sessionId);
+  }
+
+  /**
    * 獲取頻道的活躍 Session
    */
   getActiveSessionByChannel(channelId: string): Session | undefined {
@@ -503,6 +647,36 @@ export interface SessionExecutionResult {
   }
 
   /**
+   * 更新 Session 設定（模型/Agent）
+   * @param sessionId Session ID
+   * @param updates 可更新項目
+   */
+  async updateSessionSettings(
+    sessionId: string,
+    updates: {
+      model?: string;
+      agent?: string;
+    }
+  ): Promise<Session | null> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (typeof updates.model === 'string' && updates.model.trim() !== '') {
+      session.model = updates.model.trim();
+    }
+
+    if (typeof updates.agent === 'string' && updates.agent.trim() !== '') {
+      session.agent = updates.agent.trim();
+    }
+
+    session.updateActivity();
+    await this.updateSession(session);
+    return session;
+  }
+
+  /**
    * 發送提示到 Session
    * @param sessionId Session ID
    * @param prompt 提示內容
@@ -528,6 +702,7 @@ export interface SessionExecutionResult {
         sessionId: opencodeSessionId,
         prompt,
         model: promptModel,
+        agent: session.agent,
       });
       session.updateActivity();
     } catch (error) {

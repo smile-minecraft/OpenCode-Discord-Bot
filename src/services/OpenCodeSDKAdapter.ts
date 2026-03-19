@@ -70,6 +70,22 @@ export interface SendPromptParams {
 }
 
 /**
+ * Session 中斷參數
+ */
+export interface AbortSessionParams {
+  /** Session ID */
+  sessionId: string;
+}
+
+/**
+ * Session 刪除參數
+ */
+export interface DeleteSessionParams {
+  /** Session ID */
+  sessionId: string;
+}
+
+/**
  * Tool 審批參數
  */
 export interface SendToolApprovalParams {
@@ -440,6 +456,60 @@ export class OpenCodeSDKAdapter {
       logger.info(`[OpenCodeSDKAdapter] 提示已發送到 Session ${params.sessionId}`);
     } catch (error) {
       throw this.mapSDKError(error, '發送提示失敗');
+    }
+  }
+
+  /**
+   * 中斷 Session（停止當前推理/執行）
+   * @param params 中斷參數
+   * @returns 是否成功
+   * @throws {SDKAdapterError} 操作失敗
+   */
+  public async abortSession(params: AbortSessionParams): Promise<boolean> {
+    const client = this.getClient();
+
+    try {
+      const result = await client.session.abort({
+        path: {
+          id: params.sessionId,
+        },
+      });
+
+      if ((result as { error?: unknown }).error) {
+        throw this.mapSDKError((result as { error: unknown }).error, '中斷 Session 失敗');
+      }
+
+      logger.info(`[OpenCodeSDKAdapter] Session 已中斷: ${params.sessionId}`);
+      return true;
+    } catch (error) {
+      throw this.mapSDKError(error, '中斷 Session 失敗');
+    }
+  }
+
+  /**
+   * 刪除 Session（永久移除）
+   * @param params 刪除參數
+   * @returns 是否成功
+   * @throws {SDKAdapterError} 操作失敗
+   */
+  public async deleteSession(params: DeleteSessionParams): Promise<boolean> {
+    const client = this.getClient();
+
+    try {
+      const result = await client.session.delete({
+        path: {
+          id: params.sessionId,
+        },
+      });
+
+      if ((result as { error?: unknown }).error) {
+        throw this.mapSDKError((result as { error: unknown }).error, '刪除 Session 失敗');
+      }
+
+      logger.info(`[OpenCodeSDKAdapter] Session 已刪除: ${params.sessionId}`);
+      return true;
+    } catch (error) {
+      throw this.mapSDKError(error, '刪除 Session 失敗');
     }
   }
 

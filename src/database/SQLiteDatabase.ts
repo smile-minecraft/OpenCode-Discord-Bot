@@ -629,8 +629,7 @@ export class SQLiteDatabase {
     // P2-5: 驗證 Session 資料的有效性
     this.validateSession(session);
 
-    // 從 metadata 中提取 userId，如果沒有則使用空字串
-    const userId = (session.metadata as Record<string, unknown>)?.userId as string | undefined || '';
+    const userId = session.userId || '';
 
     const stmt = this.db.prepare(`
       INSERT INTO sessions (
@@ -640,8 +639,17 @@ export class SQLiteDatabase {
         metadata, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
+        channel_id = excluded.channel_id,
+        thread_id = excluded.thread_id,
+        user_id = excluded.user_id,
+        project_path = excluded.project_path,
+        model = excluded.model,
+        agent = excluded.agent,
         status = excluded.status,
         port = excluded.port,
+        prompt = excluded.prompt,
+        opencode_session_id = excluded.opencode_session_id,
+        started_at = excluded.started_at,
         last_active_at = excluded.last_active_at,
         ended_at = excluded.ended_at,
         tokens_used = excluded.tokens_used,
