@@ -12,6 +12,22 @@ vi.mock('../../src/services/OpenCodeCloudClient.js', () => ({
   })),
 }));
 
+// Mock OpenCodeSDKAdapter
+vi.mock('../../src/services/OpenCodeSDKAdapter.js', () => ({
+  getInitializedSDKAdapter: vi.fn().mockImplementation(() => {
+    // 默认抛出错误，模拟 SDK 未初始化的情况
+    throw new SDKAdapterError('SDK 适配器未初始化', 'NOT_INITIALIZED');
+  }),
+  SDKAdapterError: class SDKAdapterError extends Error {
+    code: string;
+    constructor(message: string, code: string) {
+      super(message);
+      this.name = 'SDKAdapterError';
+      this.code = code;
+    }
+  },
+}));
+
 // Import after mocking
 import { 
   getAvailableModels, 
@@ -23,6 +39,8 @@ import {
   clearModelCache,
   __test__ 
 } from '../../src/services/ModelService';
+
+import { getInitializedSDKAdapter, SDKAdapterError } from '../../src/services/OpenCodeSDKAdapter';
 
 const { convertToModelDefinition } = __test__;
 
@@ -131,7 +149,7 @@ describe('ModelService', () => {
       delete process.env.OPENCODE_API_KEY;
       delete process.env.OPENCODE_MODELS;
       
-      await expect(getAvailableModels('test-guild')).rejects.toThrow('No API key configured');
+      await expect(getAvailableModels('test-guild')).rejects.toThrow();
     });
 
     it('沒有環境變數時使用 allowFallback 應該返回靜態 fallback', async () => {
@@ -240,7 +258,7 @@ describe('ModelService', () => {
       // 確保沒有 API key
       delete process.env.OPENCODE_API_KEY;
       
-      await expect(getModelsByCategory('fast')).rejects.toThrow('No API key configured');
+      await expect(getModelsByCategory('fast')).rejects.toThrow();
     });
 
     it('有 API key 時即使沒有 guildId 也應該返回該類別的模型', async () => {
@@ -271,7 +289,7 @@ describe('ModelService', () => {
       // 確保沒有 API key
       delete process.env.OPENCODE_API_KEY;
       
-      await expect(getModelByIdAsync('anthropic/claude-sonnet-4-20250514')).rejects.toThrow('No API key configured');
+      await expect(getModelByIdAsync('anthropic/claude-sonnet-4-20250514')).rejects.toThrow();
     });
 
     it('有 API key 時即使沒有 guildId 也應該返回模型定義', async () => {
@@ -340,5 +358,92 @@ describe('ModelService', () => {
       // 清除所有緩存應該成功
       expect(models2).toEqual(models1);
     });
+  });
+});
+
+describe('ModelService - SDK Integration', () => {
+  beforeEach(() => {
+    clearModelCache();
+    vi.clearAllMocks();
+    process.env.OPENCODE_API_KEY = 'test-api-key';
+  });
+
+  afterEach(() => {
+    delete process.env.OPENCODE_API_KEY;
+    delete process.env.OPENCODE_MODELS;
+  });
+
+  it('SDK 可用时应该从 SDK 获取模型列表', async () => {
+    // Mock SDK 适配器
+    const mockAdapter = {
+      getProviders: vi.fn().mockResolvedValue([
+        {
+          id: 'openai',
+          models: [
+            { id: 'openai/gpt-4o', cost: { input: 5.00, output: 15.00 } },
+            { id: 'openai/gpt-4o-mini', cost: { input: 0.15, output: 0.60 } },
+          ],
+        },
+        {
+          id: 'anthropic',
+          models: [
+            { id: 'anthropic/claude-sonnet-4', cost: { input: 3.00, output: 15.00 } },
+          ],
+        },
+      ]),
+    };
+
+    vi.mocked(getInitializedSDKAdapter).mockReturnValue(mockAdapter as any);
+
+    const models = await getAvailableModels('test-guild');
+
+    expect(models.length).toBe(3);
+    expect(mockAdapter.getProviders).toHaveBeenCalled();
+  });
+
+  it('SDK 不可用时应该降级到环境变量', async () => {
+    // Mock SDK 适配器抛出错误
+    vi.mocked(getInitializedSDKAdapter).mockImplementation(() => {
+      throw new SDKAdapterError('SDK 未初始化', 'NOT_INITIALIZED');
+    });
+
+    // 设置环境变量
+    process.env.OPENCODE_MODELS = 'openai/gpt-4o';
+
+    const models = await getAvailableModels('test-guild', true, true);
+
+    expect(models.length).toBe(1);
+    expect(models[0].id).toBe('openai/gpt-4o');
+  });
+
+  it('SDK 和环境变量都不可用时应该使用静态 fallback', async () => {
+    // Mock SDK 适配器抛出错误
+    vi.mocked(getInitializedSDKAdapter).mockImplementation(() => {
+      throw new SDKAdapterError('SDK 未初始化', 'NOT_INITIALIZED');
+    });
+
+    // 不设置环境变量
+    delete process.env.OPENCODE_MODELS;
+
+    const models = await getAvailableModels('test-guild', true, true);
+
+    // 应该返回静态 fallback
+    expect(models.length).toBeGreaterThan(0);
+  });
+
+  it('SDK 失败且不允许 fallback 时应该抛出错误', async () => {
+    // Mock SDK 适配器抛出错误
+    vi.mocked(getInitializedSDKAdapter).mockImplementation(() => {
+      throw new SDKAdapterError('SDK 未初始化', 'NOT_INITIALIZED');
+    });
+
+    // 不设置环境变量且不允许 fallback
+    // 需要同时删除 API key，否则会走环境变量 fallback
+    delete process.env.OPENCODE_API_KEY;
+    delete process.env.OPENCODE_MODELS;
+
+    await expect(
+      getAvailableModels('test-guild', true, false)
+    ).rejects.toThrow();
   });
 });

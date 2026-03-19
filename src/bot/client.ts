@@ -37,13 +37,15 @@ import { SelectMenuHandler } from '../handlers/SelectMenuHandler.js';
 import { ModalHandler } from '../handlers/ModalHandler.js';
 import { ContextMenuHandler } from '../handlers/ContextMenuHandler.js';
 import { registerSessionButtonHandlers } from '../handlers/SessionButtonHandler.js';
+import { getThreadMessageHandler } from '../handlers/ThreadMessageHandler.js';
 
 // Utils
 import { log as logger } from '../utils/logger.js';
 import { isButtonAllowed } from '../utils/RateLimiter.js';
 
 // 服務
-import { getSessionManager } from '../services/SessionManager.js';
+import { getSessionManager, getOpenCodeSDKAdapter } from '../services/index.js';
+import { getProjectManager } from '../services/index.js';
 
 // Commands
 import { createSessionCommand, handleSessionCommand, handleSessionModelAutocomplete } from '../commands/session.js';
@@ -52,6 +54,7 @@ import { codeCommand, handleCodeCommand } from '../commands/code.js';
 import { permissionCommand, executePermissionCommand as handlePermissionCommand } from '../commands/permission.js';
 import { command as helpCommand, execute as handleHelpCommand } from '../commands/help.js';
 import { command as setupCommand, execute as handleSetupCommand } from '../commands/setup.js';
+import { createProjectCommand, ProjectCommandHandler } from '../commands/project.js';
 
 // Models data
 import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
@@ -93,6 +96,7 @@ export class DiscordClient extends Client {
   // ==================== Services (Lazy loaded) ====================
 
   private _sessionManager?: ReturnType<typeof getSessionManager>;
+  private _projectManager?: ReturnType<typeof getProjectManager>;
 
   /**
    * 獲取 Session Manager
@@ -102,6 +106,16 @@ export class DiscordClient extends Client {
       this._sessionManager = getSessionManager();
     }
     return this._sessionManager;
+  }
+
+  /**
+   * 獲取 Project Manager
+   */
+  get projectManager() {
+    if (!this._projectManager) {
+      this._projectManager = getProjectManager();
+    }
+    return this._projectManager;
   }
 
   // ==================== Options ====================
@@ -313,6 +327,16 @@ export class DiscordClient extends Client {
     // 設定 presence
     this.setPresence();
 
+    // 設置 StreamingMessageManager 的 Discord Client
+    try {
+      const { getStreamingMessageManager } = await import('../services/StreamingMessageManager.js');
+      const streamingManager = getStreamingMessageManager();
+      streamingManager.setDiscordClient(this);
+      logger.info('[Client] StreamingMessageManager Discord Client 已設置');
+    } catch (error) {
+      logger.error('[Client] 設置 StreamingMessageManager Discord Client 失敗', error as Error);
+    }
+
     // 註冊所有 handlers
     this.registerHandlers();
 
@@ -360,6 +384,7 @@ export class DiscordClient extends Client {
         permissionCommand,
         helpCommand,
         setupCommand,
+        createProjectCommand(),
       ];
 
       if (guild) {
@@ -745,6 +770,64 @@ export class DiscordClient extends Client {
       description: 'Agent 資訊選擇選單',
     });
 
+    // === Session Question SelectMenu Handler ===
+    this.selectMenuHandler.registerStringSelect({
+      customId: 'session:question:', // 使用前綴匹配
+      callback: async (interaction) => {
+        await interaction.deferReply({ flags: ['Ephemeral'] });
+        
+        try {
+          // 解析 customId: session:question:sessionId:questionId
+          const parts = interaction.customId.split(':');
+          if (parts.length < 4) {
+            throw new Error('無效的選項 ID');
+          }
+          
+          const sessionId = parts[2];
+          const questionId = parts[3];
+          const selectedValues = interaction.values;
+          
+          // 獲取 SDK 適配器並發送答案
+          const sdkAdapter = getOpenCodeSDKAdapter();
+          
+          // 調用 SDK API 發送答案
+          await sdkAdapter.sendQuestionAnswer({
+            sessionId,
+            questionId,
+            answers: selectedValues,
+          });
+          
+          await interaction.editReply({
+            content: `✅ 已送出您的選擇`,
+          });
+          
+          // 選擇後禁用選單
+          const message = interaction.message;
+          const components = message.components;
+          if (components && components.length > 0) {
+            const newComponents = components.map(row => {
+              const actionRow = ActionRowBuilder.from(row as any);
+              actionRow.components.forEach(component => {
+                if (component.data.type === 3) { // StringSelect
+                  (component as any).setDisabled(true);
+                }
+              });
+              return actionRow;
+            });
+            
+            await message.edit({ components: newComponents as any });
+          }
+          
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+          await interaction.editReply({
+            content: `❌ 送出選擇失敗: ${errorMessage}`,
+          });
+        }
+      },
+      description: '處理 AI 提問的選擇',
+    });
+
     const stats = this.selectMenuHandler.getStats();
     logger.info(`[SelectMenuHandler] Registered handlers: ${JSON.stringify(stats)}`);
   }
@@ -761,19 +844,54 @@ export class DiscordClient extends Client {
         customId: 'project:modal:add',
         callback: async (interaction) => {
           const name = interaction.fields.getTextInputValue('project_name');
-          const path = interaction.fields.getTextInputValue('project_path');
-          const alias = interaction.fields.getTextInputValue('project_alias');
+          const projectPath = interaction.fields.getTextInputValue('project_path');
+          const alias = interaction.fields.getTextInputValue('project_alias') || undefined;
           
-          // 創建專案
-          const embed = new EmbedBuilder()
-            .setTitle('✅ 專案已新增')
-            .setDescription(`已新增專案: ${name}`)
-            .addFields(
-              { name: '路徑', value: path, inline: true },
-              { name: '別名', value: alias || '無', inline: true }
-            );
+          // 先 defer 回覆
+          await interaction.deferReply({ flags: ['Ephemeral'] });
           
-          await interaction.reply({ embeds: [embed], flags: ['Ephemeral'] });
+          try {
+            // 使用 ProjectManager 創建專案
+            const projectManager = getProjectManager();
+            const project = await projectManager.createProject({
+              name,
+              path: projectPath,
+              alias,
+            });
+            
+            // 保存到存儲
+            await projectManager.save();
+            
+            const embed = new EmbedBuilder()
+              .setColor(Colors.SUCCESS)
+              .setTitle('✅ 專案已新增')
+              .setDescription(`專案 **${project.name}** 已成功添加`)
+              .addFields(
+                { name: '📁 路徑', value: `\`${project.path}\``, inline: false },
+                { name: '🆔 專案 ID', value: `\`${project.projectId}\``, inline: true }
+              )
+              .setTimestamp();
+            
+            if (alias) {
+              embed.addFields({
+                name: '🔖 別名',
+                value: `\`${alias}\``,
+                inline: true,
+              });
+            }
+            
+            await interaction.editReply({ embeds: [embed] });
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+            
+            const embed = new EmbedBuilder()
+              .setColor(Colors.ERROR)
+              .setTitle('❌ 新增專案失敗')
+              .setDescription(errorMessage)
+              .setTimestamp();
+            
+            await interaction.editReply({ embeds: [embed] });
+          }
         },
         description: '新增專案表單',
       });
@@ -901,6 +1019,13 @@ export class DiscordClient extends Client {
         case 'setup':
           await handleSetupCommand(interaction);
           break;
+        case 'project':
+          {
+            const projectManager = getProjectManager();
+            const projectHandler = new ProjectCommandHandler(projectManager);
+            await projectHandler.handle(interaction);
+          }
+          break;
         default:
           await interaction.reply({
             content: `未知指令: ${commandName}`,
@@ -946,6 +1071,13 @@ export class DiscordClient extends Client {
           }
           await interaction.respond([]);
           break;
+        case 'project':
+          {
+            const projectManager = getProjectManager();
+            const projectHandler = new ProjectCommandHandler(projectManager);
+            await projectHandler.handleAutocomplete(interaction);
+          }
+          break;
         default:
           // 忽略其他命令的 autocomplete
           await interaction.respond([]);
@@ -970,6 +1102,16 @@ export class DiscordClient extends Client {
       logger.debug(`[Message] ${message.author.tag}: ${message.content.substring(0, 50)}`, {
         channelId: message.channelId,
         guildId: message.guildId,
+      });
+    }
+
+    // 嘗試處理 Thread 訊息（如果是 Session Thread）
+    try {
+      const threadMessageHandler = getThreadMessageHandler();
+      await threadMessageHandler.handleMessage(message);
+    } catch (error) {
+      logger.error('[Message] Error handling thread message', {
+        error: error instanceof Error ? error.message : String(error),
       });
     }
 

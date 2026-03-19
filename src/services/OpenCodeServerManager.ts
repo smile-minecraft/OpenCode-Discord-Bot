@@ -9,6 +9,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import logger from '../utils/logger.js';
 import { TIMEOUTS } from '../config/constants.js';
+import { captureExceptionWithContext } from '../utils/sentryHelper.js';
 
 // ============== 常量 ==============
 
@@ -105,6 +106,15 @@ export class OpenCodeServerManager {
     // 處理進程錯誤
     this.serverProcess.on('error', (error) => {
       logger.error(`[OpenCodeServerManager] 進程錯誤: ${error.message}`);
+      
+      // Sentry 錯誤追蹤
+      captureExceptionWithContext(error, 'server_process', {
+        action: 'process_error',
+        port: this.port,
+        pid: this.serverProcess?.pid,
+        projectPath: this.currentProjectPath,
+      });
+      
       // 確保殭屍進程被終止
       if (this.serverProcess && !this.serverProcess.killed) {
         this.serverProcess.kill('SIGKILL');
@@ -127,6 +137,15 @@ export class OpenCodeServerManager {
       
       logger.info(`[OpenCodeServerManager] 伺服器已啟動於端口 ${this.port}`);
     } catch (error) {
+      // Sentry 錯誤追蹤 - 伺服器啟動失敗
+      const err = error as Error;
+      captureExceptionWithContext(err, 'server_start', {
+        action: 'startServer',
+        port: this.port,
+        projectPath: this.currentProjectPath,
+        errorMessage: err.message,
+      });
+      
       // 確保錯誤時清理資源
       if (this.serverProcess && !this.serverProcess.killed) {
         this.serverProcess.kill('SIGKILL');
@@ -170,6 +189,15 @@ export class OpenCodeServerManager {
         
         clearTimeout(timeout);
         logger.error(`[OpenCodeServerManager] 停止伺服器時發生錯誤:`, error);
+        
+        // Sentry 錯誤追蹤 - 伺服器停止失敗
+        captureExceptionWithContext(error, 'server_stop', {
+          action: 'stopServer',
+          port: this.port,
+          pid: this.serverProcess?.pid,
+          errorMessage: error.message,
+        });
+        
         this.serverProcess = null;
         this.isRunning = false;
         reject(error);
@@ -237,9 +265,57 @@ export class OpenCodeServerManager {
         signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT),
       });
       return response.ok;
+    } catch (error) {
+      // Sentry 錯誤追蹤 - 健康檢查失敗
+      const err = error as Error;
+      captureExceptionWithContext(err, 'health_check', {
+        action: 'isHealthy',
+        port: this.port,
+        errorMessage: err.message,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * 檢查端口是否已被使用
+   * @returns 端口是否已被使用
+   */
+  async checkPortInUse(): Promise<boolean> {
+    try {
+      const response = await fetch(`http://localhost:${this.port}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(2000),
+      });
+      return response.ok;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 智能啟動 - 檢查端口是否已被使用，優先複用現有伺服器
+   * @param projectPath - 專案路徑（可選）
+   * @returns 是否成功
+   */
+  async smartStart(projectPath?: string): Promise<boolean> {
+    if (await this.checkPortInUse()) {
+      logger.info(`[OpenCodeServerManager] 端口 ${this.port} 已有服務器運行，復用`);
+      this.isRunning = true;
+      this.currentProjectPath = projectPath || process.cwd();
+      return true;
+    }
+
+    if (!this.isRunning) {
+      try {
+        await this.start(projectPath);
+        return true;
+      } catch (error) {
+        logger.error('[OpenCodeServerManager] 啟動服務器失敗', { error });
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
@@ -290,7 +366,17 @@ export class OpenCodeServerManager {
       }
     }
 
-    throw new Error(`伺服器啟動超時（${HEALTH_CHECK_MAX_RETRIES} 次嘗試）`);
+    // Sentry 錯誤追蹤 - 伺服器啟動超時
+    const timeoutError = new Error(`伺服器啟動超時（${HEALTH_CHECK_MAX_RETRIES} 次嘗試）`);
+    captureExceptionWithContext(timeoutError, 'server_startup', {
+      action: 'waitForServer',
+      port: this.port,
+      projectPath: this.currentProjectPath,
+      maxRetries: HEALTH_CHECK_MAX_RETRIES,
+      timeout: HEALTH_CHECK_MAX_RETRIES * TIMEOUTS.HEALTH_CHECK,
+    });
+
+    throw timeoutError;
   }
 }
 

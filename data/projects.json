@@ -1,0 +1,87 @@
+{
+  "version": "1.0",
+  "exportedAt": "2026-03-18T14:37:05.271Z",
+  "projects": [
+    {
+      "projectId": "proj_1773783708430_ozdyh3d",
+      "name": "OpenCode-Discord-Bot",
+      "path": "/Volumes/Smile-Data/MainData/Project-Nest/OpenCode-Discord-Bot",
+      "gitRemoteUrl": null,
+      "gitBranch": "main",
+      "description": "",
+      "tags": [],
+      "channelId": null,
+      "defaultModel": "anthropic/claude-sonnet-4",
+      "defaultAgent": "general",
+      "settings": {
+        "enabled": true,
+        "autoSave": true,
+        "autoSaveInterval": 300,
+        "maxConcurrentTools": 5,
+        "allowedTools": [],
+        "blockedTools": [],
+        "envVariables": {},
+        "useGitWorktree": false,
+        "defaultCwd": null
+      },
+      "stats": {
+        "totalSessions": 0,
+        "completedSessions": 0,
+        "totalMessages": 0,
+        "totalTokensUsed": 0,
+        "totalToolCalls": 0,
+        "lastUsedAt": null,
+        "lastActiveAt": null
+      },
+      "createdAt": "2026-03-17T21:41:48.431Z",
+      "updatedAt": "2026-03-17T21:41:48.431Z"
+    },
+    {
+      "projectId": "proj_1773783757634_netvfe1",
+      "name": "Hippocampus",
+      "path": "/Volumes/Smile-Data/MainData/Project-Nest/Hippocampus",
+      "gitRemoteUrl": null,
+      "gitBranch": "main",
+      "description": "",
+      "tags": [],
+      "channelId": "1483836611480391741",
+      "defaultModel": "anthropic/claude-sonnet-4",
+      "defaultAgent": "general",
+      "settings": {
+        "enabled": true,
+        "autoSave": true,
+        "autoSaveInterval": 300,
+        "maxConcurrentTools": 5,
+        "allowedTools": [],
+        "blockedTools": [],
+        "envVariables": {},
+        "useGitWorktree": false,
+        "defaultCwd": null
+      },
+      "stats": {
+        "totalSessions": 0,
+        "completedSessions": 0,
+        "totalMessages": 0,
+        "totalTokensUsed": 0,
+        "totalToolCalls": 0,
+        "lastUsedAt": null,
+        "lastActiveAt": null
+      },
+      "createdAt": "2026-03-17T21:42:37.634Z",
+      "updatedAt": "2026-03-18T14:37:05.271Z"
+    }
+  ],
+  "aliases": [],
+  "bindings": [
+    {
+      "channelId": "1483040262333792358",
+      "projectId": "proj_1773783757634_netvfe1",
+      "boundAt": "2026-03-18T00:53:00.590Z"
+    },
+    {
+      "channelId": "1483836611480391741",
+      "projectId": "proj_1773783757634_netvfe1",
+      "boundAt": "2026-03-18T14:37:05.271Z"
+    }
+  ]
+}

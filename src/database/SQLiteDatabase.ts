@@ -82,6 +82,7 @@ interface SessionRow {
   tool_call_count: number;
   error_message: string | null;
   metadata: string;
+  thread_archived: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -97,6 +98,37 @@ interface MessageRow {
   tool_calls: string | null;
   tool_results: string | null;
   timestamp: number;
+}
+
+/**
+ * Thread Mapping 資料庫記錄（用於資料庫行格式）
+ */
+export interface ThreadMappingRecord {
+  id?: number;
+  thread_id: string;
+  session_id: string;
+  opencode_session_id: string | null;
+  channel_id: string;
+  guild_id: string;
+  created_at: number;
+  archived_at: number | null;
+  needs_cleanup: number;
+  cleanup_error: string | null;
+}
+
+/**
+ * Thread Mapping 資料結構（用於方法參數）
+ */
+export interface ThreadMapping {
+  threadId: string;
+  sessionId: string;
+  opencodeSessionId?: string;
+  channelId: string;
+  guildId: string;
+  createdAt: number;
+  archivedAt?: number | null;
+  needsCleanup?: boolean;
+  cleanupError?: string | null;
 }
 
 /**
@@ -197,33 +229,44 @@ export class SQLiteDatabase {
       // 讀取 schema 文件
       const schema = fs.readFileSync(schemaPath, 'utf-8');
       
-      // 過濾掉 JavaScript 風格的多行註釋 /** */
-      // SQLite 的 db.exec() 可以正確處理多行 SQL 語句（包括 CREATE TRIGGER）
-      const filteredSchema = schema.replace(/\/\*[\s\S]*?\*\//g, '');
+      // 移除 JavaScript 風格的區塊註解 (/* ... */) 和單行註解 (// ...)
+      const filteredSchema = schema
+        .replace(/\/\*[\s\S]*?\*\//g, '')  // 移除區塊註解
+        .replace(/\/\/.*$/gm, '');          // 移除單行註解
       
       try {
         // 直接執行整個 schema（SQLite 會正確處理多行語句和 CREATE TRIGGER）
         this.db!.exec(filteredSchema);
         logger.info('[SQLiteDatabase] Schema 執行成功');
       } catch (error) {
-        // 如果執行失敗，嘗試按語句分割執行（作為後備方案）
-        logger.warn('[SQLiteDatabase] Schema 整體執行失敗，嘗試分割執行:', error instanceof Error ? error.message : String(error));
+        // 記錄真實的錯誤原因
+        logger.warn('[SQLiteDatabase] Schema 整體執行失敗，嘗試分割執行:', error);
         
-        // 分割並執行每條語句
+        // 改用「分號+換行」來切割，這樣就不會破壞 Trigger 內部的分號
         const statements = filteredSchema
-          .split(';')
+          .split(/;\s*\n/)
           .map(s => s.trim())
-          .filter(s => s && !s.startsWith('--'));
+          .filter(s => s.length > 0 && !s.startsWith('--'));
         
         for (const statement of statements) {
           try {
-            this.db!.exec(statement);
+            // 執行時把分號加回去
+            this.db!.exec(statement + ';');
           } catch (stmtError) {
-            // 忽略 PRAGMA 和警告級別的錯誤
-            if (!statement.toUpperCase().startsWith('PRAGMA')) {
-              logger.warn('[SQLiteDatabase] 語句執行失敗:', statement.substring(0, 50));
-            }
+            logger.warn('[SQLiteDatabase] 語句執行失敗:', { 
+              statement: statement.substring(0, 100) + '...', 
+              error: stmtError 
+            });
           }
+        }
+      }
+
+      // 驗證必需的表是否已創建
+      const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      const requiredTables = ['sessions', 'messages', 'tool_approvals', 'projects', 'channel_bindings', 'guild_settings'];
+      for (const table of requiredTables) {
+        if (!tables.find(t => t.name === table)) {
+          throw new Error(`Required table '${table}' was not created during initialization`);
         }
       }
       
@@ -344,12 +387,39 @@ export class SQLiteDatabase {
     return this.isInitialized && this.db !== null;
   }
 
+  // ==================== Transaction 支援 ====================
+
+  /**
+   * 在事務中執行函數
+   * @description 使用 better-sqlite3 的 transaction() 確保原子性操作
+   * 如果函數拋出錯誤，事務會自動回滾
+   * 
+   * @param fn 要在事務中執行的函數
+   * @returns 函數的返回值
+   * @throws 如果資料庫未初始化或事務執行失敗
+   * 
+   * @example
+   * ```typescript
+   * const result = db.transaction(() => {
+   *   db.saveThreadMapping(mapping);
+   *   db.updateSessionsThreadArchived(sessionId, true);
+   *   return true;
+   * });
+   * ```
+   */
+  transaction<T>(fn: () => T): T {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    const transactionFn = this.db.transaction(fn);
+    return transactionFn();
+  }
+
   // ==================== Migration 系統 ====================
 
   /**
    * 當前資料庫版本
    */
-  private static readonly CURRENT_SCHEMA_VERSION = 1;
+  private static readonly CURRENT_SCHEMA_VERSION = 2;
 
   /**
    * 執行資料庫遷移
@@ -381,11 +451,10 @@ export class SQLiteDatabase {
       logger.info('[SQLiteDatabase] Migration v1 已執行（初始 schema）');
     }
 
-    // 這裡可以添加未來的遷移邏輯
-    // 例如：
-    // if (currentVersion < 2) {
-    //   await this.migrateToVersion(2);
-    // }
+    // 執行 v2 遷移
+    if (currentVersion < 2) {
+      await this.migrateToVersion(2);
+    }
   }
 
   /**
@@ -400,7 +469,7 @@ export class SQLiteDatabase {
     // 根據版本執行對應的遷移
     switch (version) {
       case 2:
-        // await this.migrateToV2();
+        await this.migrateToV2();
         break;
       // 未來添加更多遷移...
       default:
@@ -413,6 +482,47 @@ export class SQLiteDatabase {
     `).run(version, `Migration to v${version}`, Date.now());
 
     logger.info(`[SQLiteDatabase] Migration v${version} 已完成`);
+  }
+
+  /**
+   * 遷移到 v2 - 創建 thread_mappings 表
+   */
+  private async migrateToV2(): Promise<void> {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    logger.info('[SQLiteDatabase] 執行 v2 遷移 (thread_mappings 表)...');
+
+    // 創建 thread_mappings 表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS thread_mappings (
+        thread_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        opencode_session_id TEXT,
+        channel_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        archived_at INTEGER,
+        needs_cleanup INTEGER DEFAULT 0,
+        cleanup_error TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 創建索引
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_thread_mappings_session ON thread_mappings(session_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_thread_mappings_opencode ON thread_mappings(opencode_session_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_thread_mappings_channel ON thread_mappings(channel_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_thread_mappings_guild ON thread_mappings(guild_id)`);
+
+    // 添加 sessions.thread_archived 欄位（如果不存在）
+    try {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN thread_archived BOOLEAN DEFAULT FALSE`);
+    } catch (error) {
+      // 欄位可能已存在，忽略錯誤
+      logger.debug('[SQLiteDatabase] thread_archived 欄位可能已存在');
+    }
+
+    logger.info('[SQLiteDatabase] v2 遷移完成');
   }
 
   // ==================== 索引創建 ====================
@@ -1357,6 +1467,299 @@ export class SQLiteDatabase {
 
     const result = this.db.prepare('DELETE FROM channel_bindings WHERE channel_id = ?').run(channelId);
     return result.changes > 0;
+  }
+
+  // ==================== Thread Mapping 操作 ====================
+
+  /**
+   * 確保 thread_mappings 表存在
+   */
+  private ensureThreadMappingsTable(): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS thread_mappings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        opencode_session_id TEXT,
+        channel_id TEXT NOT NULL,
+        guild_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        archived_at INTEGER,
+        needs_cleanup INTEGER DEFAULT 0,
+        cleanup_error TEXT,
+        
+        UNIQUE(thread_id),
+        UNIQUE(session_id),
+        UNIQUE(opencode_session_id)
+      )
+    `);
+
+    // 創建索引
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_thread_mappings_thread_id ON thread_mappings(thread_id);
+      CREATE INDEX IF NOT EXISTS idx_thread_mappings_session_id ON thread_mappings(session_id);
+      CREATE INDEX IF NOT EXISTS idx_thread_mappings_opencode_session_id ON thread_mappings(opencode_session_id);
+      CREATE INDEX IF NOT EXISTS idx_thread_mappings_channel_id ON thread_mappings(channel_id);
+      CREATE INDEX IF NOT EXISTS idx_thread_mappings_archived ON thread_mappings(archived_at) WHERE archived_at IS NULL;
+    `);
+  }
+
+  /**
+   * 儲存或更新 Thread Mapping
+   */
+  saveThreadMapping(mapping: ThreadMapping): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const stmt = this.db.prepare(`
+        INSERT INTO thread_mappings (
+          thread_id, session_id, opencode_session_id, channel_id, guild_id,
+          created_at, archived_at, needs_cleanup, cleanup_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          session_id = excluded.session_id,
+          opencode_session_id = excluded.opencode_session_id,
+          channel_id = excluded.channel_id,
+          guild_id = excluded.guild_id,
+          archived_at = excluded.archived_at,
+          needs_cleanup = excluded.needs_cleanup,
+          cleanup_error = excluded.cleanup_error
+      `);
+
+      stmt.run(
+        mapping.threadId,
+        mapping.sessionId,
+        mapping.opencodeSessionId || null,
+        mapping.channelId,
+        mapping.guildId,
+        mapping.createdAt,
+        mapping.archivedAt ?? null,
+        mapping.needsCleanup ? 1 : 0,
+        mapping.cleanupError || null
+      );
+    } catch (error) {
+      logger.error('[SQLiteDatabase] saveThreadMapping 失敗:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 透過 Thread ID 取得 Mapping
+   */
+  getThreadMapping(threadId: string): ThreadMapping | null {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const row = this.db.prepare('SELECT * FROM thread_mappings WHERE thread_id = ?').get(threadId) as ThreadMappingRecord | undefined;
+      if (!row) return null;
+
+      return this.rowToThreadMapping(row);
+    } catch (error) {
+      logger.error('[SQLiteDatabase] getThreadMapping 失敗:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 透過 Session ID 取得 Mapping
+   */
+  getThreadMappingBySessionId(sessionId: string): ThreadMapping | null {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const row = this.db.prepare('SELECT * FROM thread_mappings WHERE session_id = ?').get(sessionId) as ThreadMappingRecord | undefined;
+      if (!row) return null;
+
+      return this.rowToThreadMapping(row);
+    } catch (error) {
+      logger.error('[SQLiteDatabase] getThreadMappingBySessionId 失敗:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 透過 OpenCode Session ID 取得 Mapping
+   */
+  getThreadMappingByOpencodeSessionId(opencodeSessionId: string): ThreadMapping | null {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const row = this.db.prepare('SELECT * FROM thread_mappings WHERE opencode_session_id = ?').get(opencodeSessionId) as ThreadMappingRecord | undefined;
+      if (!row) return null;
+
+      return this.rowToThreadMapping(row);
+    } catch (error) {
+      logger.error('[SQLiteDatabase] getThreadMappingByOpencodeSessionId 失敗:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 取得所有 Thread Mappings（用於啟動時恢復）
+   */
+  getAllThreadMappings(): ThreadMapping[] {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const rows = this.db.prepare('SELECT * FROM thread_mappings ORDER BY created_at DESC').all() as ThreadMappingRecord[];
+      return rows.map(row => this.rowToThreadMapping(row));
+    } catch (error) {
+      logger.error('[SQLiteDatabase] getAllThreadMappings 失敗:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 取得所有非 archived 的 Thread Mappings
+   */
+  getActiveThreadMappings(): ThreadMapping[] {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const rows = this.db.prepare('SELECT * FROM thread_mappings WHERE archived_at IS NULL ORDER BY created_at DESC').all() as ThreadMappingRecord[];
+      return rows.map(row => this.rowToThreadMapping(row));
+    } catch (error) {
+      logger.error('[SQLiteDatabase] getActiveThreadMappings 失敗:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 標記 Thread 為 archived
+   */
+  archiveThreadMapping(threadId: string): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      this.db.prepare(`
+        UPDATE thread_mappings 
+        SET archived_at = ?, needs_cleanup = 0, cleanup_error = NULL
+        WHERE thread_id = ?
+      `).run(Date.now(), threadId);
+    } catch (error) {
+      logger.error('[SQLiteDatabase] archiveThreadMapping 失敗:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 標記 Thread 需要手動清理
+   */
+  markThreadForCleanup(threadId: string, error: string): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      this.db.prepare(`
+        UPDATE thread_mappings 
+        SET needs_cleanup = 1, cleanup_error = ?, archived_at = COALESCE(archived_at, ?)
+        WHERE thread_id = ?
+      `).run(error, Date.now(), threadId);
+    } catch (error) {
+      logger.error('[SQLiteDatabase] markThreadForCleanup 失敗:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 取得需要清理的 Threads
+   * @returns 需要清理的 Thread Mapping 陣列
+   */
+  getThreadsNeedingCleanup(): ThreadMapping[] {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const rows = this.db.prepare(`
+        SELECT * FROM thread_mappings 
+        WHERE needs_cleanup = 1 
+        ORDER BY created_at DESC
+      `).all() as ThreadMappingRecord[];
+
+      return rows.map(row => this.rowToThreadMapping(row));
+    } catch (error) {
+      logger.error('[SQLiteDatabase] getThreadsNeedingCleanup 失敗:', error);
+      return [];
+    }
+  }
+
+  /**
+   * 刪除 Thread Mapping
+   */
+  deleteThreadMapping(threadId: string): boolean {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      this.ensureThreadMappingsTable();
+
+      const result = this.db.prepare('DELETE FROM thread_mappings WHERE thread_id = ?').run(threadId);
+      return result.changes > 0;
+    } catch (error) {
+      logger.error('[SQLiteDatabase] deleteThreadMapping 失敗:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 更新 sessions.thread_archived 欄位
+   */
+  updateSessionsThreadArchived(sessionId: string, archived: boolean): void {
+    if (!this.db) throw new Error('資料庫未初始化');
+
+    try {
+      // 首先確保 thread_archived 欄位存在
+      this.db.exec(`
+        ALTER TABLE sessions ADD COLUMN thread_archived INTEGER
+      `);
+    } catch {
+      // 欄位可能已存在，忽略錯誤
+    }
+
+    try {
+      this.db.prepare(`
+        UPDATE sessions 
+        SET thread_archived = ?, updated_at = ?
+        WHERE id = ?
+      `).run(archived ? 1 : 0, Date.now(), sessionId);
+    } catch (error) {
+      logger.error('[SQLiteDatabase] updateSessionsThreadArchived 失敗:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * 將資料庫記錄轉換為 ThreadMapping 物件
+   */
+  private rowToThreadMapping(row: ThreadMappingRecord): ThreadMapping {
+    return {
+      threadId: row.thread_id,
+      sessionId: row.session_id,
+      opencodeSessionId: row.opencode_session_id || undefined,
+      channelId: row.channel_id,
+      guildId: row.guild_id,
+      createdAt: row.created_at,
+      archivedAt: row.archived_at,
+      needsCleanup: row.needs_cleanup === 1,
+      cleanupError: row.cleanup_error || undefined,
+    };
   }
 }
 

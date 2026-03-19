@@ -84,19 +84,38 @@ export interface SendToolApprovalParams {
 }
 
 /**
- * Provider 認證參數
+ * Provider 认证参数
  */
 export interface SetProviderAuthParams {
   /** Provider ID */
   providerId: string;
   /** API Key */
   apiKey: string;
-  /** 認證類型 */
+  /** 认证类型 */
   type?: 'apiKey' | 'http';
-  /** 認證方式 */
+  /** 认证方式 */
   scheme?: 'basic' | 'bearer';
-  /** 認證位置 */
+  /** 认证位置 */
   in?: 'header' | 'query' | 'cookie';
+}
+
+/**
+ * Provider 模型信息（来自 SDK）
+ */
+export interface SDKModelInfo {
+  id: string;
+  cost: {
+    input: number;
+    output: number;
+  };
+}
+
+/**
+ * Provider 信息（来自 SDK）
+ */
+export interface SDKProviderInfo {
+  id: string;
+  models: SDKModelInfo[];
 }
 
 // ============== OpenCodeSDKAdapter 類別 =============
@@ -114,6 +133,10 @@ export class OpenCodeSDKAdapter {
   private externalUrl: string | null = null;
   /** ProcessManager 實例 */
   private processManager: ProcessManager;
+  /** 健康檢查定時器 */
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  /** 健康檢查間隔（毫秒） */
+  private readonly HEALTH_CHECK_INTERVAL = 30000;
 
   /**
    * 創建 OpenCodeSDKAdapter 實例
@@ -135,7 +158,7 @@ export class OpenCodeSDKAdapter {
     // 如果使用外部服務
     if (this.externalUrl) {
       logger.info(`[OpenCodeSDKAdapter] 使用外部 OpenCode 服務: ${this.externalUrl}`);
-      this.port = options.port ?? 3000;
+      this.port = options.port ?? 4096;
       
       // 檢查外部服務是否可用
       const isRunning = await this.checkHealth(this.port);
@@ -151,13 +174,20 @@ export class OpenCodeSDKAdapter {
         baseUrl: this.externalUrl,
       });
       
+      // 啟動健康檢查
+      this.startHealthCheck();
+      
       return this.port;
     }
 
     // 本地模式：啟動伺服器
-    this.port = await this.processManager.startServer(
+    // 使用固定端口 4096
+    this.port = options.port ?? 4096;
+    
+    // 啟動伺服器
+    await this.processManager.startServer(
       options.projectPath,
-      options.port
+      this.port
     );
 
     // 初始化 SDK 客戶端
@@ -165,6 +195,9 @@ export class OpenCodeSDKAdapter {
       baseUrl: this.processManager.getBaseUrl(this.port),
     });
 
+    // 啟動健康檢查
+    this.startHealthCheck();
+    
     logger.info(`[OpenCodeSDKAdapter] SDK 適配器已初始化，端口: ${this.port}`);
     return this.port;
   }
@@ -262,6 +295,31 @@ export class OpenCodeSDKAdapter {
   }
 
   /**
+   * 啟動健康檢查
+   */
+  private startHealthCheck(): void {
+    if (this.healthCheckInterval) return;
+    this.healthCheckInterval = setInterval(async () => {
+      const isHealthy = await this.checkHealth();
+      if (!isHealthy) {
+        logger.warn('[OpenCodeSDKAdapter] 健康檢查失敗');
+      }
+    }, this.HEALTH_CHECK_INTERVAL);
+    this.healthCheckInterval.unref();
+    logger.info('[OpenCodeSDKAdapter] 健康檢查已啟動');
+  }
+
+  /**
+   * 停止健康檢查
+   */
+  private stopHealthCheck(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+  }
+
+  /**
    * 訂閱 Session 事件
    * @param sessionId Session ID
    * @returns SSEEventEmitterAdapter 實例
@@ -274,12 +332,12 @@ export class OpenCodeSDKAdapter {
     const adapter = new SSEEventEmitterAdapter();
     
     try {
-      // 調用 SDK 的 global.event() 方法
-      // SDK 返回 Promise<ServerSentEventsResult>，需要 await
-      const eventStream = await client.global.event();
+      // 調用 SDK 的 event.subscribe() 方法
+      // SDK 返回 Promise<ServerSentEventsResult>，AsyncGenerator 在 result.stream 中
+      const result = await client.event.subscribe();
       
       // 啟動 Adapter - 使用 as unknown as 進行類型轉換（SDK 類型複雜）
-      adapter.start(eventStream as unknown as AsyncIterable<SDKEvent>, sessionId);
+      adapter.start(result.stream as unknown as AsyncIterable<SDKEvent>, sessionId);
       
       logger.info(`[OpenCodeSDKAdapter] 已訂閱事件, sessionId: ${sessionId}`);
       
@@ -312,6 +370,9 @@ export class OpenCodeSDKAdapter {
    * 銷毀適配器
    */
   public async destroy(): Promise<void> {
+    // 停止健康檢查
+    this.stopHealthCheck();
+    
     await this.cleanup();
   }
 
@@ -437,6 +498,100 @@ export class OpenCodeSDKAdapter {
   }
 
   /**
+   * 發送問題答案
+   * @param params 問題答案參數
+   * @throws {SDKAdapterError} 發送失敗
+   */
+  public async sendQuestionAnswer(params: { sessionId: string; questionId: string; answers: string[] }): Promise<void> {
+    const baseUrl = this.getBaseUrl();
+    if (!baseUrl) {
+      throw new SDKAdapterError('伺服器未運行', 'SERVER_NOT_RUNNING');
+    }
+
+    try {
+      // 根據 SDK v2 的結構，API 路徑應該是 /question/{requestID}/reply
+      // 這裡我們直接使用 fetch 調用 REST API
+      const response = await fetch(`${baseUrl}/question/${params.questionId}/reply`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          answers: params.answers.map(value => ({ label: value, value }))
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      logger.info(`[OpenCodeSDKAdapter] 答案已發送到問題 ${params.questionId}`);
+    } catch (error) {
+      logger.error('[OpenCodeSDKAdapter] 發送問題答案失敗:', error);
+      throw this.mapSDKError(error, '發送問題答案失敗');
+    }
+  }
+
+  /**
+   * 获取可用 Provider 和模型列表
+   * @returns Provider 数组
+   * @throws {SDKAdapterError} 获取失败
+   */
+  public async getProviders(): Promise<SDKProviderInfo[]> {
+    const client = this.getClient();
+    
+    try {
+      const response = await client.config.providers();
+      
+      // 直接打印 response.data
+      const data = (response as any).data;
+      logger.info('[OpenCodeSDKAdapter] response.data keys:', Object.keys(data || {}));
+      
+      if (data && data.providers) {
+        logger.info('[OpenCodeSDKAdapter] data.providers keys (前3个):', Object.keys(data.providers).slice(0, 3));
+        
+        // 打印第一个 provider 的键和值
+        const firstProviderKey = Object.keys(data.providers)[0];
+        if (firstProviderKey) {
+          const firstProvider = data.providers[firstProviderKey];
+          logger.info(`[OpenCodeSDKAdapter] Provider [${firstProviderKey}] 的 keys:`, Object.keys(firstProvider || {}));
+          logger.info(`[OpenCodeSDKAdapter] Provider [${firstProviderKey}] models 类型:`, typeof firstProvider?.models);
+          if (firstProvider?.models) {
+            logger.info(`[OpenCodeSDKAdapter] Provider [${firstProviderKey}] models keys:`, Object.keys(firstProvider.models).slice(0, 5));
+          }
+        }
+      }
+      
+      // 使用简化的解析
+      const providers: SDKProviderInfo[] = [];
+      const rawProviders = (response as any).data?.providers || {};
+      
+      for (const [providerId, providerData] of Object.entries(rawProviders)) {
+        const pData = providerData as any;
+        const modelsObj = pData.models || {};
+        
+        // models 可能是对象，需要转换为数组
+        const models = Object.entries(modelsObj).map(([modelId, modelInfo]: [string, any]) => ({
+          id: modelId,
+          cost: modelInfo.cost || { input: 0, output: 0 },
+        }));
+        
+        providers.push({
+          id: providerId,
+          models,
+        });
+        
+        logger.info(`[OpenCodeSDKAdapter] Provider: ${providerId}, Models: ${models.length}`);
+      }
+      
+      return providers;
+    } catch (error) {
+      logger.error('[OpenCodeSDKAdapter] 获取 providers 失败:', error);
+      throw this.mapSDKError(error, '获取 Provider 列表失败');
+    }
+  }
+
+  /**
    * 映射 SDK 錯誤到適配器錯誤
    * @param error SDK 錯誤
    * @param fallbackMessage 預設錯誤訊息
@@ -543,6 +698,21 @@ export function getOpenCodeSDKAdapter(): OpenCodeSDKAdapter {
 export function initializeOpenCodeSDKAdapter(): OpenCodeSDKAdapter {
   sdkAdapterInstance = new OpenCodeSDKAdapter();
   return sdkAdapterInstance;
+}
+
+/**
+ * 获取已初始化的 SDK 适配器实例
+ * @throws {SDKAdapterError} 适配器未初始化
+ */
+export function getInitializedSDKAdapter(): OpenCodeSDKAdapter {
+  const instance = sdkAdapterInstance;
+  if (!instance || !instance.isInitialized()) {
+    throw new SDKAdapterError(
+      'SDK 适配器未初始化，请先调用 initializeOpenCodeSDKAdapter()',
+      'NOT_INITIALIZED'
+    );
+  }
+  return instance;
 }
 
 // ============== 導出 =============

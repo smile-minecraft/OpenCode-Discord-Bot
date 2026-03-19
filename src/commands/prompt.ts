@@ -10,6 +10,7 @@ import {
 } from 'discord.js';
 import { getSessionManager } from '../services/SessionManager.js';
 import { Colors } from '../builders/EmbedBuilder.js';
+import { captureCommandError } from '../utils/sentryHelper.js';
 
 const command = new SlashCommandBuilder()
   .setName('prompt')
@@ -61,6 +62,17 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       embeds: [embed],
     });
   } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        interaction.commandName,
+        { message },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    
     const errorMessage = error instanceof Error ? error.message : '未知錯誤';
     await interaction.editReply({
       content: `❌ 發送訊息失敗: ${errorMessage}`,

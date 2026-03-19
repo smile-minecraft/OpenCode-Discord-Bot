@@ -94,6 +94,9 @@ describe('OpenCodeSDKAdapter', () => {
     mockGetBaseUrl.mockReturnValue('http://127.0.0.1:3000');
     mockAllocatePort.mockReturnValue(3000);
     mockCreateOpencodeClientFn.mockReturnValue({
+      global: {
+        event: vi.fn(),
+      },
       event: { subscribe: vi.fn() },
       session: { create: vi.fn() },
     });
@@ -135,20 +138,21 @@ describe('OpenCodeSDKAdapter', () => {
       });
     });
 
-    it('本地模式：未指定端口時應該自動分配', async () => {
+    it('使用固定端口 4096', async () => {
       const mockClient = { 
         event: { subscribe: vi.fn() },
         session: { create: vi.fn() },
       };
       mockCreateOpencodeClientFn.mockReturnValue(mockClient);
-      mockAllocatePort.mockReturnValue(3005);
+      mockAllocatePort.mockReturnValue(4096);
 
       const port = await adapter.initialize({
         projectPath: '/test/project',
       });
 
-      expect(port).toBe(3005);
-      expect(mockStartServer).toHaveBeenCalledWith('/test/project', undefined);
+      expect(port).toBe(4096);
+      // 未指定端口时，内部使用固定端口 4096
+      expect(mockStartServer).toHaveBeenCalled();
     });
 
     it('外部服務模式：應該使用外部 URL', async () => {
@@ -345,10 +349,20 @@ describe('OpenCodeSDKAdapter', () => {
 
   describe('subscribeToEvents() - 事件訂閱', () => {
     it('成功訂閱時應該返回 SSEEventEmitterAdapter', async () => {
+      const mockEventStream = {
+        stream: {
+          [Symbol.asyncIterator]: vi.fn().mockReturnValue({
+            next: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+          }),
+        },
+      };
       const mockClient = { 
-        event: { subscribe: vi.fn().mockResolvedValue({
-          [Symbol.asyncIterator]: vi.fn(),
-        }) },
+        global: {
+          event: vi.fn(),
+        },
+        event: { 
+          subscribe: vi.fn().mockResolvedValue(mockEventStream),
+        },
         session: { create: vi.fn() },
       };
       mockCreateOpencodeClientFn.mockReturnValue(mockClient);

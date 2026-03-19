@@ -51,6 +51,11 @@ import {
   registerToolApprovalHandlers,
 } from './ToolApprovalHandler.js';
 
+import {
+  ThreadMessageHandler,
+  getThreadMessageHandler,
+} from './ThreadMessageHandler.js';
+
 // Re-export all
 export {
   ButtonHandler,
@@ -97,6 +102,11 @@ export {
   ToolApprovalHandler,
   createToolApprovalHandler,
   registerToolApprovalHandlers,
+};
+
+export {
+  ThreadMessageHandler,
+  getThreadMessageHandler,
 };
 
 /**

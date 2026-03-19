@@ -13,11 +13,16 @@ import logger from '../utils/logger.js';
  * 對應 SDK 發送的實際事件類型
  */
 export type SDKEventType =
+  // Message events
   | 'message.updated'
   | 'message.created'
+  | 'message.part.updated'
+  | 'message.part.delta'
+  // Tool events
   | 'tool_call'
   | 'tool_call_start'
   | 'tool_call_end'
+  // Session events
   | 'session.created'
   | 'session.deleted'
   | 'session.idle'
@@ -25,7 +30,16 @@ export type SDKEventType =
   | 'session.compacted'
   | 'session.started'
   | 'session.ended'
-  | 'error';
+  | 'session.updated'
+  | 'session.status'
+  | 'session.diff'
+  // Question events
+  | 'question.asked'
+  // Error events
+  | 'error'
+  // Server events
+  | 'server.connected'
+  | 'server.heartbeat';
 
 /**
  * SDK 事件屬性
@@ -53,6 +67,13 @@ export interface SDKEventProperties {
   requestId?: string;
   /** 錯誤訊息 */
   error?: string;
+  /** 問題屬性 */
+  question?: {
+    id: string;
+    text: string;
+    options: Array<{ label: string; value: string; description?: string }>;
+    multiple?: boolean;
+  };
   /** 其他屬性 */
   [key: string]: unknown;
 }
@@ -75,7 +96,8 @@ export type SSEEventTypeInternal =
   | 'waiting'
   | 'error'
   | 'connected'
-  | 'disconnected';
+  | 'disconnected'
+  | 'question';
 
 /**
  * 訊息事件數據（與 SSEClient 保持一致）
@@ -119,6 +141,17 @@ export interface SessionCompleteEventData {
 }
 
 /**
+ * Question 事件數據
+ */
+export interface QuestionEventData {
+  sessionId: string;
+  questionId: string;
+  text: string;
+  options: Array<{ label: string; value: string; description?: string }>;
+  multiple: boolean;
+}
+
+/**
  * 內部 SSE 事件
  */
 export interface SSEEventInternal {
@@ -128,7 +161,8 @@ export interface SSEEventInternal {
     | ToolRequestEventData
     | ConnectedEventData
     | ErrorEventData
-    | SessionCompleteEventData;
+    | SessionCompleteEventData
+    | QuestionEventData;
   timestamp: number;
 }
 
@@ -141,11 +175,18 @@ export type SSEEventHandler = (event: SSEEventInternal) => void;
 
 /** SDK 事件類型到內部事件類型的映射 */
 const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
+  // Message events - map to 'message'
   'message.updated': 'message',
   'message.created': 'message',
+  'message.part.updated': 'message',
+  'message.part.delta': 'message',
+  
+  // Tool events - map to 'tool_request'
   'tool_call': 'tool_request',
   'tool_call_start': 'tool_request',
   'tool_call_end': 'tool_request',
+  
+  // Session events
   'session.created': 'connected',
   'session.started': 'connected',
   'session.deleted': 'disconnected',
@@ -153,7 +194,19 @@ const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
   'session.idle': 'waiting',
   'session.error': 'error',
   'session.compacted': 'session_complete',
+  'session.updated': null,
+  'session.status': null,
+  'session.diff': null,
+  
+  // Question events
+  'question.asked': 'question',
+  
+  // Error events
   'error': 'error',
+  
+  // Server events
+  'server.connected': 'connected',
+  'server.heartbeat': null,
 };
 
 // ============== 介面定義 ==============
@@ -343,8 +396,15 @@ export class SSEEventEmitterAdapter
   private handleSDKEvent(event: SDKEvent): void {
     const internalType = EVENT_TYPE_MAP[event.type];
 
-    if (!internalType) {
+    // null means we want to explicitly ignore this event
+    // undefined means the event type is not recognized
+    if (internalType === undefined) {
       logger.warn(`[SSEEventEmitterAdapter] 未知的 SDK 事件類型: ${event.type}`);
+      return;
+    }
+
+    // null means we want to silently ignore this event type
+    if (internalType === null) {
       return;
     }
 
@@ -352,9 +412,63 @@ export class SSEEventEmitterAdapter
 
     switch (internalType) {
       case 'message':
+        // 提取內容 - 支援多種 SDK 格式
+        let extractedContent = props.content || '';
+        
+        // 處理 OpenCode SDK v2 的 part 結構 (message.part.updated, message.part.delta)
+        if (!extractedContent && props.part && typeof props.part === 'object') {
+          const part = props.part as any;
+          if (part.type === 'text' && part.text) {
+            extractedContent = String(part.text);
+          }
+        }
+        
+        // 處理 delta 結構 (message.part.delta)
+        if (!extractedContent && props.delta && typeof props.delta === 'object') {
+          const delta = props.delta as any;
+          if (delta.type === 'text' && delta.text) {
+            extractedContent = String(delta.text);
+          }
+        }
+        
+        // 處理直接的 text 屬性
+        if (!extractedContent && props.text) {
+          extractedContent = String(props.text);
+        }
+
+        // 處理 props.info 結構 (常見於 message.updated 事件)
+        // 優先順序：直接 content > info.content > info.parts
+        if (!extractedContent && props.info && typeof props.info === 'object') {
+          const info = props.info as any;
+          
+          // 首先檢查 info.content
+          if (info.content) {
+            extractedContent = String(info.content);
+          }
+          
+          // 如果沒有 content，檢查 info.parts 陣列
+          if (!extractedContent && Array.isArray(info.parts) && info.parts.length > 0) {
+            // 合併所有 parts 的 text 內容
+            const textParts = info.parts
+              .filter((p: any) => p && (p.type === 'text' || p.type === 'output_text') && p.text)
+              .map((p: any) => p.text);
+            if (textParts.length > 0) {
+              extractedContent = textParts.join('');
+            }
+          }
+
+          // 處理 info.part (單一 part 結構)
+          if (!extractedContent && info.part && typeof info.part === 'object') {
+            const infoPart = info.part as any;
+            if ((infoPart.type === 'text' || infoPart.type === 'output_text') && infoPart.text) {
+              extractedContent = String(infoPart.text);
+            }
+          }
+        }
+        
         this.emitEvent('message', {
           sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
-          content: props.content || '',
+          content: extractedContent,
           isComplete: props.is_complete || props.isComplete || false,
         } as MessageEventData);
         break;
@@ -395,6 +509,18 @@ export class SSEEventEmitterAdapter
       case 'disconnected':
         // 斷開事件已在 stop 時發送
         break;
+
+      case 'question':
+        if (props.question) {
+          this.emitEvent('question', {
+            sessionId: props.session_id || props.sessionId || this.currentSessionId || '',
+            questionId: props.question.id,
+            text: props.question.text,
+            options: props.question.options,
+            multiple: props.question.multiple || false,
+          } as QuestionEventData);
+        }
+        break;
     }
 
     logger.debug(`[SSEEventEmitterAdapter] 處理事件: ${event.type} -> ${internalType}`);
@@ -413,6 +539,7 @@ export class SSEEventEmitterAdapter
       | ConnectedEventData
       | ErrorEventData
       | SessionCompleteEventData
+      | QuestionEventData
   ): void {
     const event: SSEEventInternal = {
       type,

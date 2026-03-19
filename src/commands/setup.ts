@@ -17,6 +17,7 @@ import {
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import { Colors } from '../builders/EmbedBuilder.js';
 import logger from '../utils/logger.js';
+import { captureCommandError } from '../utils/sentryHelper.js';
 
 // ============== 指令定義 ==============
 
@@ -150,6 +151,18 @@ async function handleBind(interaction: ChatInputCommandInteraction): Promise<voi
     });
   } catch (error) {
     logger.error('[Setup] 綁定項目失敗:', error);
+    
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'setup bind',
+        { projectPath },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    
     await interaction.reply({
       embeds: [
         new EmbedBuilder()
@@ -232,6 +245,18 @@ async function handleShow(interaction: ChatInputCommandInteraction): Promise<voi
     });
   } catch (error) {
     logger.error('[Setup] 獲取配置失敗:', error);
+    
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'setup show',
+        { channelId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    
     await interaction.reply({
       embeds: [
         new EmbedBuilder()
@@ -306,6 +331,18 @@ async function handleUnbind(interaction: ChatInputCommandInteraction): Promise<v
     });
   } catch (error) {
     logger.error('[Setup] 解除綁定失敗:', error);
+    
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'setup unbind',
+        { channelId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    
     await interaction.reply({
       embeds: [
         new EmbedBuilder()

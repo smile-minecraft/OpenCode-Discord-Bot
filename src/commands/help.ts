@@ -4,6 +4,7 @@
  */
 
 import { SlashCommandBuilder, EmbedBuilder, MessageFlags, ChatInputCommandInteraction } from 'discord.js';
+import { captureCommandError } from '../utils/sentryHelper.js';
 
 const command = new SlashCommandBuilder()
   .setName('help')
@@ -28,14 +29,32 @@ const command = new SlashCommandBuilder()
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const selectedCommand = interaction.options.getString('command');
 
-  if (selectedCommand) {
-    // 顯示特定指令的幫助
-    const embed = getCommandHelp(selectedCommand);
-    await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
-  } else {
-    // 顯示所有指令的幫助
-    const embed = getAllCommandsHelp();
-    await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+  try {
+    if (selectedCommand) {
+      // 顯示特定指令的幫助
+      const embed = getCommandHelp(selectedCommand);
+      await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+    } else {
+      // 顯示所有指令的幫助
+      const embed = getAllCommandsHelp();
+      await interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+    }
+  } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'help',
+        { selectedCommand },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+    await interaction.reply({
+      content: `❌ 執行指令失敗: ${errorMessage}`,
+      flags: [MessageFlags.Ephemeral],
+    });
   }
 }
 

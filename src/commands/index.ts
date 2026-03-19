@@ -15,3 +15,6 @@ export { permissionCommand as permissionCommand, executePermissionCommand as han
 
 // Code Command (Passthrough)
 export { codeCommand, handleCodeCommand, createPassthroughActionRow } from './code.js';
+
+// Project Command
+export { createProjectCommand as projectCommand } from './project.js';

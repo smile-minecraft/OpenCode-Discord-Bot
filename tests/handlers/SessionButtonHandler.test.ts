@@ -88,11 +88,11 @@ describe('SessionButtonHandler', () => {
       // 應該包含多個處理器配置
       expect(configs.length).toBeGreaterThan(0);
 
-      // 檢查關鍵按鈕是否存在
+      // 檢查關鍵按鈕是否存在（使用前綴匹配）
       const customIds = configs.map(c => c.customId);
       
       expect(customIds).toContain(SessionButtonIds.START);
-      expect(customIds).toContain(SessionButtonIds.STOP);
+      expect(customIds).toContain('session:stop:'); // 改用前綴匹配
       expect(customIds).toContain(SessionButtonIds.RESUME);
       expect(customIds).toContain(SessionButtonIds.PASSTHROUGH_TOGGLE);
     });
@@ -380,10 +380,10 @@ describe('registerSessionButtonHandlers() - 註冊函數', () => {
     
     const configs = (mockButtonHandler.registerMany as any).mock.calls[0][0];
     
-    // 應該包含所有主要的按鈕配置
+    // 應該包含所有主要的按鈕配置（使用前綴匹配）
     const customIds = configs.map((c: any) => c.customId);
     expect(customIds).toContain(SessionButtonIds.START);
-    expect(customIds).toContain(SessionButtonIds.STOP);
+    expect(customIds).toContain('session:stop:'); // 改用前綴匹配
     expect(customIds).toContain(SessionButtonIds.RESUME);
     expect(customIds).toContain(SessionButtonIds.PASSTHROUGH_TOGGLE);
     expect(customIds).toContain('session:status');

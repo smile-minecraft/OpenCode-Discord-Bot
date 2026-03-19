@@ -4,6 +4,7 @@
  */
 
 import { Project, ProjectData } from '../database/models/Project.js';
+import { log as logger } from '../utils/logger.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -14,6 +15,8 @@ export interface ProjectManagerConfig {
   maxProjects?: number;
   /** 是否啟用路徑驗證 */
   validatePaths?: boolean;
+  /** 允許的基礎路徑白名單 */
+  allowedBasePaths?: string[];
 }
 
 export interface ProjectAlias {
@@ -51,6 +54,7 @@ export class ProjectManager {
       dataPath: config.dataPath || './data/projects.json',
       maxProjects: config.maxProjects || 50,
       validatePaths: config.validatePaths ?? true,
+      allowedBasePaths: config.allowedBasePaths || [],
     };
   }
 
@@ -146,6 +150,14 @@ export class ProjectManager {
     if (options.alias) {
       this.setAlias(options.alias, projectId);
     }
+
+    // 審計日誌：專案創建
+    logger.info('[ProjectManager] Project created', {
+      projectId: project.projectId,
+      name: project.name,
+      path: project.path,
+      alias: options.alias,
+    });
 
     // 自動保存
     await this.save();
@@ -253,6 +265,13 @@ export class ProjectManager {
 
     project.updatedAt = new Date().toISOString();
 
+    // 審計日誌：專案更新
+    logger.info('[ProjectManager] Project updated', {
+      projectId: project.projectId,
+      name: project.name,
+      updates: Object.keys(updates),
+    });
+
     await this.save();
 
     return project;
@@ -276,6 +295,13 @@ export class ProjectManager {
     // 移除專案
     this.projects.delete(projectId);
 
+    // 審計日誌：專案刪除
+    logger.info('[ProjectManager] Project deleted', {
+      projectId: project.projectId,
+      name: project.name,
+      path: project.path,
+    });
+
     await this.save();
 
     return true;
@@ -295,17 +321,59 @@ export class ProjectManager {
     // 檢查路徑格式（支援絕對路徑和相對路徑）
     const normalizedPath = path.normalize(projectPath);
 
+    // 檢查路徑遍歷攻擊 (path traversal)
+    if (normalizedPath.includes('..')) {
+      return { valid: false, error: '路徑包含非法遍歷模式' };
+    }
+
+    // 解析為絕對路徑
+    let absolutePath: string;
+    try {
+      absolutePath = path.isAbsolute(normalizedPath)
+        ? normalizedPath
+        : path.resolve(normalizedPath);
+    } catch {
+      return { valid: false, error: '無法解析路徑' };
+    }
+
+    // 檢查是否在允許的基礎路徑內（白名單檢查）
+    if (this.config.allowedBasePaths.length > 0) {
+      const isAllowed = this.config.allowedBasePaths.some((basePath) => {
+        const normalizedBasePath = path.normalize(basePath);
+        return absolutePath.startsWith(normalizedBasePath);
+      });
+
+      if (!isAllowed) {
+        return { valid: false, error: '路徑不在允許的基礎目錄內' };
+      }
+    }
+
     // 檢查路徑是否存在
     try {
-      const exists = fs.existsSync(normalizedPath);
+      // 解析符號連結以防止 symlink 攻擊
+      const realPath = fs.realpathSync(absolutePath);
+      const exists = fs.existsSync(realPath);
+
       if (!exists) {
         return { valid: true, error: '路徑不存在', exists: false };
       }
 
       // 檢查是否為目錄
-      const stats = fs.statSync(normalizedPath);
+      const stats = fs.statSync(realPath);
       if (!stats.isDirectory()) {
         return { valid: false, error: '路徑不是有效的目錄' };
+      }
+
+      // 再次檢查解析後的路徑是否仍然在白名單內（防止 symlink 逃逸）
+      if (this.config.allowedBasePaths.length > 0) {
+        const isStillAllowed = this.config.allowedBasePaths.some((basePath) => {
+          const normalizedBasePath = path.normalize(basePath);
+          return realPath.startsWith(normalizedBasePath);
+        });
+
+        if (!isStillAllowed) {
+          return { valid: false, error: '路徑通過符號連結逃逸到允許目錄外' };
+        }
       }
 
       return { valid: true, exists: true };
@@ -430,6 +498,13 @@ export class ProjectManager {
       projectId,
       boundAt: new Date().toISOString(),
     });
+
+    // 審計日誌：頻道綁定
+    logger.info('[ProjectManager] Project bound to channel', {
+      projectId,
+      channelId,
+      projectName: project.name,
+    });
   }
 
   /**
@@ -447,6 +522,13 @@ export class ProjectManager {
     }
 
     this.channelBindings.delete(channelId);
+
+    // 審計日誌：頻道解除綁定
+    logger.info('[ProjectManager] Project unbound from channel', {
+      projectId: binding.projectId,
+      channelId,
+    });
+
     return true;
   }
 
@@ -605,6 +687,41 @@ export interface ProjectExportData {
  */
 export function createProjectManager(config?: ProjectManagerConfig): ProjectManager {
   return new ProjectManager(config);
+}
+
+/**
+ * 單例實例
+ */
+let projectManagerInstance: ProjectManager | null = null;
+
+/**
+ * 獲取專案管理器單例實例
+ * @throws 如果尚未初始化，拋出錯誤
+ */
+export function getProjectManager(): ProjectManager {
+  if (!projectManagerInstance) {
+    throw new Error('ProjectManager has not been initialized. Call initializeProjectManager() first.');
+  }
+  return projectManagerInstance;
+}
+
+/**
+ * 初始化專案管理器單例
+ */
+export function initializeProjectManager(config?: ProjectManagerConfig): ProjectManager {
+  if (projectManagerInstance) {
+    // 返回現有實例
+    return projectManagerInstance;
+  }
+  projectManagerInstance = new ProjectManager(config);
+  return projectManagerInstance;
+}
+
+/**
+ * 重置專案管理器（主要用於測試）
+ */
+export function resetProjectManager(): void {
+  projectManagerInstance = null;
 }
 
 export default ProjectManager;

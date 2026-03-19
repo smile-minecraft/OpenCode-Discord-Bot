@@ -14,6 +14,10 @@ import logger from '../utils/logger.js';
 import { MODEL_CONFIG } from '../config/constants.js';
 import { getOpenCodeServerManager, OpenCodeServerManager } from './OpenCodeServerManager.js';
 import { getOpenCodeSDKAdapter, OpenCodeSDKAdapter } from './OpenCodeSDKAdapter.js';
+import { getSessionEventManager, SessionEventManager } from './SessionEventManager.js';
+import { captureSessionError } from '../utils/sentryHelper.js';
+import { getProjectManager } from './ProjectManager.js';
+import { getThreadManager } from './ThreadManager.js';
 
 // ============== 類型定義 ==============
 
@@ -65,10 +69,12 @@ export interface SessionExecutionResult {
     /** 清理定時器 */
     private cleanupInterval: NodeJS.Timeout | null = null;
     
-    /** SDK Adapter */
-    private sdkAdapter: OpenCodeSDKAdapter;
-    /** 預設模型 */
-    private readonly defaultModel = MODEL_CONFIG.DEFAULT;
+  /** SDK Adapter */
+  private sdkAdapter: OpenCodeSDKAdapter;
+  /** Session Event Manager */
+  private sessionEventManager: SessionEventManager;
+  /** 預設模型 */
+  private readonly defaultModel = MODEL_CONFIG.DEFAULT;
     /** 預設 Agent */
     private readonly defaultAgent = 'general';
     /** OpenCode 伺服器管理器 */
@@ -81,6 +87,7 @@ export interface SessionExecutionResult {
       this.sqliteDb = SQLiteDatabase.getInstance();
       this.serverManager = getOpenCodeServerManager();
       this.sdkAdapter = getOpenCodeSDKAdapter();
+      this.sessionEventManager = getSessionEventManager();
       
       logger.info('[SessionManager] 使用 SDK Adapter');
 
@@ -135,7 +142,7 @@ export interface SessionExecutionResult {
       // 1. 確保 OpenCode 伺服器正在運行
       if (!this.serverManager.getIsRunning()) {
         try {
-          await this.serverManager.start(session.projectPath);
+          await this.serverManager.smartStart(session.projectPath);
           logger.info(`[SessionManager] OpenCode 伺服器已啟動於端口 ${port}`);
         } catch (error) {
           logger.error('[SessionManager] 伺服器啟動失敗', { error });
@@ -177,9 +184,27 @@ export interface SessionExecutionResult {
       channelSessionSet.add(sessionId);
       this.channelSessions.set(options.channelId, channelSessionSet);
 
+      // 7. 訂閱 Session 事件 (Phase 2)
+      try {
+        await this.sessionEventManager.subscribe(sessionId);
+      } catch (subscribeError) {
+        logger.warn(`[SessionManager] 訂閱 Session ${sessionId} 事件失敗:`, subscribeError);
+        // 不阻止 Session 創建，僅記錄警告
+      }
+
       logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSession.id}, Port: ${port}`);
     } catch (error) {
       logger.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, options.guildId, {
+          action: 'createSession',
+          channelId: options.channelId,
+          userId: options.userId,
+          projectPath: session.projectPath,
+        });
+      }
 
       // 嘗試清理 SDK session 如果已創建
       if (session.opencodeSessionId) {
@@ -233,13 +258,21 @@ export interface SessionExecutionResult {
     try {
       // 檢查伺服器是否仍在運行
       if (!this.serverManager.getIsRunning()) {
-        await this.serverManager.start(session.projectPath);
+        await this.serverManager.smartStart(session.projectPath);
       }
 
       session.resume();
       logger.info(`[SessionManager] Session ${sessionId} 恢復成功`);
     } catch (error) {
       logger.error(`[SessionManager] 恢復 Session ${sessionId} 失敗:`, error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, undefined, {
+          action: 'resumeSession',
+        });
+      }
+
       session.fail(error instanceof Error ? error.message : '未知錯誤');
     }
 
@@ -282,6 +315,16 @@ export interface SessionExecutionResult {
     // 保存最終狀態
     await this.saveSession(session);
 
+    // Call ThreadManager cleanup
+    try {
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        await threadManager.cleanupSession(sessionId);
+      }
+    } catch (cleanupError) {
+      logger.warn(`[SessionManager] Thread cleanup failed for session ${sessionId}:`, cleanupError);
+    }
+
     // 從活動列表移除
     this.activeSessions.delete(sessionId);
 
@@ -292,6 +335,13 @@ export interface SessionExecutionResult {
       if (channelSessionSet.size === 0) {
         this.channelSessions.delete(session.channelId);
       }
+    }
+
+    // 取消 Session 事件訂閱 (Phase 2)
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 取消 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
     }
 
     return session;
@@ -396,6 +446,16 @@ export interface SessionExecutionResult {
   }
 
   /**
+   * 更新 Session 資訊並保存到資料庫
+   * @param session 要更新的 Session 實例
+   */
+  async updateSession(session: Session): Promise<void> {
+    session.updatedAt = new Date().toISOString();
+    await this.saveSession(session);
+    logger.debug(`[SessionManager] Session ${session.sessionId} updated and saved`);
+  }
+
+  /**
    * 發送提示到 Session
    * @param sessionId Session ID
    * @param prompt 提示內容
@@ -422,6 +482,16 @@ export interface SessionExecutionResult {
       });
       session.updateActivity();
     } catch (error) {
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, undefined, {
+          action: 'sendPrompt',
+          channelId: session.channelId,
+          userId: session.userId,
+          projectPath: session.projectPath,
+        });
+      }
+
       throw error;
     }
   }
@@ -439,7 +509,25 @@ export interface SessionExecutionResult {
    * 獲取預設專案路徑
    */
   private getDefaultProjectPath(channelId: string): string {
-    // 使用可配置的專案根目錄，優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
+    // 優先檢查是否有綁定的專案
+    try {
+      const projectManager = getProjectManager();
+      const channelBinding = projectManager.getChannelBinding(channelId);
+      
+      if (channelBinding) {
+        const project = projectManager.getProject(channelBinding.projectId);
+        if (project) {
+          logger.debug(`[SessionManager] Using bound project path: ${project.path} for channel: ${channelId}`);
+          return project.path;
+        }
+      }
+    } catch (error) {
+      // ProjectManager 可能尚未初始化，使用 fallback
+      logger.debug(`[SessionManager] ProjectManager not available, using default path`);
+    }
+    
+    // Fallback: 使用可配置的專案根目錄
+    // 優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
     const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
     return path.join(projectsRoot, channelId);
   }
@@ -461,6 +549,14 @@ export interface SessionExecutionResult {
       return session;
     } catch (error) {
       logger.error('[SessionManager] 載入 Session 失敗:', error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, undefined, {
+          action: 'loadSession',
+        });
+      }
+
       return null;
     }
   }
@@ -479,6 +575,15 @@ export interface SessionExecutionResult {
       logger.debug(`[SessionManager] Session ${session.sessionId} 已保存`);
     } catch (error) {
       logger.error('[SessionManager] 保存 Session 失敗:', error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, session.sessionId, undefined, {
+          action: 'saveSession',
+          channelId: session.channelId,
+          userId: session.userId,
+        });
+      }
     }
   }
 
@@ -489,6 +594,17 @@ export interface SessionExecutionResult {
     for (const [sessionId, session] of this.activeSessions) {
       if (session.isEnded()) {
         this.saveSession(session);
+        
+        // Call ThreadManager cleanup
+        try {
+          const threadManager = getThreadManager();
+          if (threadManager.isReady()) {
+            threadManager.cleanupSession(sessionId);
+          }
+        } catch (cleanupError) {
+          logger.warn(`[SessionManager] Thread cleanup failed for session ${sessionId}:`, cleanupError);
+        }
+        
         this.activeSessions.delete(sessionId);
 
         // 從頻道索引移除
@@ -499,7 +615,29 @@ export interface SessionExecutionResult {
             this.channelSessions.delete(session.channelId);
           }
         }
+
+        // 取消 Session 事件訂閱 (Phase 2)
+        try {
+          this.sessionEventManager.unsubscribe(sessionId);
+        } catch (unsubscribeError) {
+          logger.warn(`[SessionManager] 清理時取消 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
+        }
       }
+    }
+  }
+
+  /**
+   * 清理 Session 相關資源（包括 Thread）
+   * @param sessionId Session ID
+   */
+  async cleanupSession(sessionId: string): Promise<void> {
+    try {
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        await threadManager.cleanupSession(sessionId);
+      }
+    } catch (cleanupError) {
+      logger.warn(`[SessionManager] Session ${sessionId} thread cleanup failed:`, cleanupError);
     }
   }
 
@@ -534,8 +672,21 @@ export interface SessionExecutionResult {
         
         logger.info(`[SessionManager] Session ${session.sessionId} 已恢復`);
       }
+
+      // 恢復完成後，恢復 thread mappings
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        threadManager.restoreMappings();
+      }
     } catch (error) {
       logger.error('[SessionManager] 恢復 Session 失敗:', error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, 'restore', undefined, {
+          action: 'restoreActiveSessions',
+        });
+      }
     }
   }
 

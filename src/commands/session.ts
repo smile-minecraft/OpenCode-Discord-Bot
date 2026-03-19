@@ -15,12 +15,20 @@ import {
   ChatInputCommandInteraction,
   AutocompleteInteraction,
   MessageFlags,
+  TextChannel,
+  NewsChannel,
 } from 'discord.js';
 import { SessionManager } from '../services/SessionManager.js';
+import { getThreadManager } from '../services/ThreadManager.js';
+import { getSessionEventManager } from '../services/SessionEventManager.js';
+import { getStreamingMessageManager, type SSEEventEmitterAdapter } from '../services/StreamingMessageManager.js';
+import { getOpenCodeSDKAdapter } from '../services/OpenCodeSDKAdapter.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import type { ModelDefinition } from '../models/ModelData.js';
 import { MODEL_CONFIG } from '../config/constants.js';
+import { captureCommandError } from '../utils/sentryHelper.js';
+import logger from '../utils/logger.js';
 
 // ============== 指令構建 ==============
 
@@ -217,6 +225,15 @@ async function handleStartCommand(
     return;
   }
 
+  // 檢查頻道是否為 TextChannel 或 NewsChannel
+  const channel = interaction.channel;
+  if (!channel || !(channel instanceof TextChannel || channel instanceof NewsChannel)) {
+    await interaction.editReply({
+      content: '❌ 無法在此類型頻道中創建 Session，請在文字頻道或公告頻道中使用。',
+    });
+    return;
+  }
+
   try {
     // 創建新 Session（傳入 guildId）
     const session = await sessionManager.createSession({
@@ -227,7 +244,28 @@ async function handleStartCommand(
       model,
     });
 
-    // 構建回覆 Embed
+    // ===== Phase 1: 創建 Thread 並绑定到 Session =====
+    // ThreadManager 已在啟動時初始化，這裡直接使用
+    const threadManager = getThreadManager();
+
+    // 使用頻道創建 Thread
+    const threadId = await threadManager.createThread({
+      channel: channel,
+      sessionId: session.sessionId,
+      guildId: guildId,
+      opencodeSessionId: session.opencodeSessionId,
+      name: `session-${session.sessionId.slice(0, 8)}`,
+    });
+
+    // 更新 Session 的 threadId
+    session.threadId = threadId;
+
+    // 保存更新後的 Session
+    await sessionManager.updateSession(session);
+
+    logger.info(`[SessionCommand] Created thread ${threadId} for session ${session.sessionId}`);
+
+    // ===== 構建 Embed 並發送到 Thread =====
     const embed = SessionStatusEmbedBuilder.createSessionStartedCard({
       sessionId: session.sessionId,
       prompt: session.prompt,
@@ -241,11 +279,47 @@ async function handleStartCommand(
     const { createSessionActionRow } = await import('../builders/SessionActionRowBuilder.js');
     const components = createSessionActionRow(session.sessionId, session.status);
 
+    // 發送到 Thread 而不是直接回覆互動
+    const thread = channel.threads.cache.get(threadId) || await channel.threads.fetch(threadId);
+    if (thread && 'send' in thread) {
+      await thread.send({
+        embeds: [embed],
+        components: [components],
+      });
+
+      // ===== Phase 7: 啟動 Streaming (使用 Typing Indicator) =====
+      // 獲取 SDK 適配器端口
+      const sdkAdapter = getOpenCodeSDKAdapter();
+      const port = sdkAdapter.getPort();
+      
+      if (port) {
+        // 訂閱 Session 事件
+        const sessionEventManager = getSessionEventManager();
+        const adapter = await sessionEventManager.subscribe(session.sessionId) as SSEEventEmitterAdapter;
+        
+        // 啟動 Streaming（傳入 threadId 而非初始訊息）
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.startStreaming(session, threadId, port, adapter);
+        
+        logger.info(`[SessionCommand] Streaming started for session ${session.sessionId}`);
+      }
+    }
+
+    // 回覆互動，提供 Thread 連結
     await interaction.editReply({
-      embeds: [embed],
-      components: [components],
+      content: `✅ Session 已啟動！請在 Thread 中繼續對話：${thread?.toString() || ''}`,
     });
   } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'session start',
+        { prompt, model, channelId, userId, guildId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
     const errorMessage = error instanceof Error ? error.message : '未知錯誤';
     await interaction.editReply({
       content: `❌ 啟動 Session 失敗: ${errorMessage}`,
@@ -291,6 +365,16 @@ async function handleListCommand(
       embeds: [embed],
     });
   } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'session list',
+        { statusFilter, channelId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
     const errorMessage = error instanceof Error ? error.message : '未知錯誤';
     await interaction.editReply({
       content: `❌ 獲取 Session 列表失敗: ${errorMessage}`,
@@ -334,6 +418,16 @@ async function handleResumeCommand(
       components: [components],
     });
   } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'session resume',
+        { sessionId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
     const errorMessage = error instanceof Error ? error.message : '未知錯誤';
     await interaction.editReply({
       content: `❌ 恢復 Session 失敗: ${errorMessage}`,
@@ -374,6 +468,16 @@ async function handleAbortCommand(
       components: [], // 移除操作按鈕
     });
   } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        'session abort',
+        { sessionId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
     const errorMessage = error instanceof Error ? error.message : '未知錯誤';
     await interaction.editReply({
       content: `❌ 終止 Session 失敗: ${errorMessage}`,

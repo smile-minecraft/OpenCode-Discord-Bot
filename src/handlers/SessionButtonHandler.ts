@@ -50,9 +50,9 @@ export class SessionButtonHandler {
         description: '開始新 Session（帶 Session ID）',
       },
       {
-        customId: SessionButtonIds.STOP,
-        callback: this.handleStop.bind(this),
-        description: '停止 Session',
+        customId: 'session:stop:', // 前缀匹配
+        callback: this.handleStopWithId.bind(this),
+        description: '停止 Session（帶 Session ID）',
       },
       {
         customId: 'session:stop:', // 前綴匹配

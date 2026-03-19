@@ -16,6 +16,10 @@ import { createDiscordClient } from './client.js';
 import { loadConfig, getEnvInfo, checkRequiredEnvVars } from '../config/config.js';
 import { TIMEOUTS } from '../config/constants.js';
 import logger from '../utils/logger.js';
+import * as Sentry from '@sentry/node';
+import { shouldCaptureError } from '../utils/sentryHelper.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // 服務匯入
 import {
@@ -26,6 +30,7 @@ import {
   initializeToolApprovalService,
   initializePermissionService,
   initializeSessionQueueIntegration,
+  initializeThreadManager,
 } from '../services/index.js';
 
 // ==================== 全域錯誤處理 ====================
@@ -45,8 +50,19 @@ function emergencyShutdown(signal: string): void {
  * 處理未捕獲的 Promise Rejection
  */
 process.on('unhandledRejection', (reason, promise) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  
+  // 上報到 Sentry
+  if (shouldCaptureError(error)) {
+    Sentry.captureException(error, {
+      extra: {
+        promise: String(promise),
+      },
+    });
+  }
+  
   logger.error('[Process] Unhandled Promise Rejection', {
-    reason: reason instanceof Error ? reason.message : String(reason),
+    reason: error.message,
     promise: String(promise),
   });
 
@@ -63,6 +79,11 @@ process.on('unhandledRejection', (reason, promise) => {
  * 處理未捕獲的 Exception
  */
 process.on('uncaughtException', (error) => {
+  // 上報到 Sentry
+  if (shouldCaptureError(error)) {
+    Sentry.captureException(error);
+  }
+  
   logger.error('[Process] Uncaught Exception', {
     message: error.message,
     stack: error.stack,
@@ -164,6 +185,16 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
+    // 8. 刷新 Sentry 緩衝區
+    try {
+      await Sentry.flush(2000);
+      logger.info('[Shutdown] Sentry flushed');
+    } catch (error) {
+      logger.error('[Shutdown] Error flushing Sentry', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     logger.info('[Shutdown] Graceful shutdown completed');
   } catch (error) {
     logger.error('[Shutdown] Error during shutdown', {
@@ -199,7 +230,27 @@ process.on('SIGTERM', () => {
 async function initializeServices(_config: ReturnType<typeof loadConfig>): Promise<void> {
   logger.info('[Bootstrap] Initializing services...');
 
-  // 1. 初始化 JSON 資料庫（向後相容）
+  // 1. 初始化 SDK
+  try {
+    const { initializeOpenCodeServerManager, initializeOpenCodeSDKAdapter } = await import('../services/index.js');
+    
+    initializeOpenCodeServerManager();
+    
+    const sdkAdapter = initializeOpenCodeSDKAdapter();
+    const projectPath = process.env.OPENCODE_PROJECT_PATH || process.cwd();
+    
+    await sdkAdapter.initialize({
+      projectPath,
+      port: 4096,
+    });
+    
+    logger.info('[Bootstrap] SDK 適配器已初始化');
+  } catch (error) {
+    logger.error('[Bootstrap] SDK 初始化失敗', { error });
+    throw error;
+  }
+
+  // 2. 初始化 JSON 資料庫（向後相容）
   try {
     const { Database } = await import('../database/index.js');
     await Database.getInstance().initialize();
@@ -236,11 +287,60 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
     throw error;
   }
 
-  // 3. 初始化 Project Manager
+  // 4. 初始化 Project Manager
   try {
-    await initializeProjectManager({
-      dataPath: process.env.PROJECTS_PATH || './data/projects',
+    const projectDataPath = process.env.PROJECTS_PATH || path.join(process.cwd(), 'data', 'projects.json');
+    
+    // 確保資料目錄存在
+    const dataDir = path.dirname(projectDataPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    
+    // 解析允許的基礎路徑（支持多個路徑，用冒號分隔）
+    const allowedPathsStr = process.env.ALLOWED_PROJECT_PATHS;
+    const allowedBasePaths = allowedPathsStr 
+      ? allowedPathsStr.split(':').map(p => path.resolve(p.trim())).filter(p => p)
+      : undefined;
+    
+    // 初始化 ProjectManager
+    const projectManager = initializeProjectManager({
+      dataPath: projectDataPath,
+      allowedBasePaths,
     });
+    
+    // 設置保存回調 - 將資料寫入 JSON 檔案
+    projectManager.setSaveCallback(async (data) => {
+      try {
+        await fs.promises.writeFile(projectDataPath, JSON.stringify(data, null, 2), 'utf-8');
+        logger.debug('[Bootstrap] Project data saved to file');
+      } catch (error) {
+        logger.error('[Bootstrap] Failed to save project data', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
+    
+    // 設置載入回調 - 從 JSON 檔案讀取資料
+    projectManager.setLoadCallback(async () => {
+      try {
+        if (fs.existsSync(projectDataPath)) {
+          const content = await fs.promises.readFile(projectDataPath, 'utf-8');
+          return JSON.parse(content);
+        }
+        return null;
+      } catch (error) {
+        logger.error('[Bootstrap] Failed to load project data', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    });
+    
+    // 初始化並載入既有資料
+    await projectManager.initialize();
+    
     logger.info('[Bootstrap] Project Manager initialized');
   } catch (error) {
     logger.error('[Bootstrap] Failed to initialize Project Manager', {
@@ -313,6 +413,18 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
     logger.info('[Bootstrap] Session Queue Integration initialized');
   } catch (error) {
     logger.warn('[Bootstrap] Session Queue Integration initialization skipped', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  // 9. 初始化 Thread Manager
+  try {
+    const { SQLiteDatabase } = await import('../database/SQLiteDatabase.js');
+    const sqliteDb = SQLiteDatabase.getInstance();
+    await initializeThreadManager(sqliteDb);
+    logger.info('[Bootstrap] Thread Manager initialized');
+  } catch (error) {
+    logger.warn('[Bootstrap] Thread Manager initialization skipped', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
