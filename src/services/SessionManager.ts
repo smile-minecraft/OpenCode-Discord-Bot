@@ -479,8 +479,10 @@ export interface ClearSessionsResult {
       logger.warn(`[SessionManager] Session ${sessionId} thread delete/cleanup failed:`, threadError);
     }
 
+    // Mark local state as aborted for in-memory consumers.
+    // We intentionally skip persisting here because this method
+    // immediately deletes the session record from database.
     session.abort();
-    await this.saveSession(session);
 
     this.activeSessions.delete(sessionId);
     const channelSessionSet = this.channelSessions.get(session.channelId);

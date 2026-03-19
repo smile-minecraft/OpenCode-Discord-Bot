@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { SessionManager } from '../../src/services/SessionManager.js';
+import { Session } from '../../src/database/models/Session.js';
 
 // Mock OpenCodeServerManager
 vi.mock('../../src/services/OpenCodeServerManager.js', () => ({
@@ -101,6 +102,52 @@ describe('SessionManager', () => {
       const hasActive = sessionManager.hasActiveSession('test-channel');
       
       expect(hasActive).toBe(false);
+    });
+
+    /**
+     * 回歸測試：
+     * 刪除流程不應在「即將刪除資料」前再保存一次 Session，
+     * 以避免舊資料 userId 為空時觸發 validateSession 錯誤。
+     */
+    it('terminateAndDeleteSession 在 userId 為空時仍可刪除且不會呼叫 saveSession', async () => {
+      const manager = sessionManager as any;
+      const sessionId = 'sess_empty_user';
+      const channelId = 'channel_empty_user';
+
+      const loadedSession = new Session({
+        sessionId,
+        channelId,
+        userId: '',
+        prompt: 'test',
+        projectPath: '/tmp',
+      });
+      loadedSession.opencodeSessionId = 'ses_test_123';
+      loadedSession.threadId = null;
+
+      const saveSpy = vi.spyOn(manager, 'saveSession');
+      const deleteSessionSpy = vi.fn().mockReturnValue(true);
+
+      manager.activeSessions = new Map();
+      manager.channelSessions = new Map([[channelId, new Set([sessionId])]]);
+      manager.loadSession = vi.fn().mockResolvedValue(loadedSession);
+      manager.sdkAdapter = {
+        abortSession: vi.fn().mockResolvedValue(undefined),
+        deleteSession: vi.fn().mockResolvedValue(true),
+      };
+      manager.sessionEventManager = {
+        unsubscribe: vi.fn(),
+      };
+      manager.sqliteDb = {
+        isReady: vi.fn().mockReturnValue(true),
+        deleteSession: deleteSessionSpy,
+      };
+
+      const result = await sessionManager.terminateAndDeleteSession(sessionId, { deleteThread: false });
+
+      expect(result).toBeTruthy();
+      expect(result?.status).toBe('aborted');
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(deleteSessionSpy).toHaveBeenCalledWith(sessionId);
     });
   });
 });
