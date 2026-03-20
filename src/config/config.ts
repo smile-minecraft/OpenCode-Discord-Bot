@@ -184,6 +184,14 @@ export function getConfig(): Config {
 }
 
 /**
+ * OpenCode 配置
+ */
+export const opencodeConfig = {
+  apiKey: process.env.OPENCODE_API_KEY,
+  apiUrl: process.env.OPENCODE_API_URL || 'http://localhost:3000',
+};
+
+/**
  * 重新載入設定
  * @returns 新的設定物件
  */
@@ -199,4 +207,5 @@ export default {
   checkRequiredEnvVars,
   getEnvInfo,
   ConfigError,
+  opencodeConfig,
 };

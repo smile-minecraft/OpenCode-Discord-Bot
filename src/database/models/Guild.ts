@@ -109,14 +109,6 @@ export interface GuildSettings {
   allowedAgents: string[];
   /** OpenCode CLI 路徑 */
   opencodePath?: string;
-  /** AI 提供商連接設置 */
-  providers?: Record<string, {
-    apiKey?: string;  // 加密儲存
-    connected: boolean;
-    connectedAt?: string;
-    lastValidated?: string;
-    validationError?: string;
-  }>;
 }
 
 /**

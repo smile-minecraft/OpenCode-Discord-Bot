@@ -278,3 +278,29 @@ export async function getAvailableModelsAsync(guildId?: string, allowFallback: b
   const { getAvailableModels } = await import('../services/ModelService.js');
   return getAvailableModels(guildId, true, allowFallback);
 }
+
+// ============================================
+// SDK 動態模型類型定義（步驟 3）
+// ============================================
+
+/**
+ * 動態模型定價（來自 SDK）
+ */
+export interface DynamicModelPricing {
+  input: number;  // $/M tokens
+  output: number; // $/M tokens
+}
+
+/**
+ * 動態模型定義（來自 SDK）
+ */
+export interface DynamicModelDefinition {
+  id: string;
+  provider: string;
+  name: string;
+  description: string;
+  category: ModelCategory;
+  pricing: DynamicModelPricing;
+  limits: ModelLimits;
+  features: string[];
+}

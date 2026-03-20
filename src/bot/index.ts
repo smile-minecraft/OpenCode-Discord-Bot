@@ -16,6 +16,11 @@ import { createDiscordClient } from './client.js';
 import { loadConfig, getEnvInfo, checkRequiredEnvVars } from '../config/config.js';
 import { TIMEOUTS } from '../config/constants.js';
 import logger from '../utils/logger.js';
+import * as Sentry from '@sentry/node';
+import { shouldCaptureError } from '../utils/sentryHelper.js';
+import { buttonRateLimiter, autocompleteRateLimiter } from '../utils/RateLimiter.js';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // 服務匯入
 import {
@@ -26,9 +31,13 @@ import {
   initializeToolApprovalService,
   initializePermissionService,
   initializeSessionQueueIntegration,
+  initializeThreadManager,
 } from '../services/index.js';
 
 // ==================== 全域錯誤處理 ====================
+
+let isShuttingDown = false;
+let shutdownPromise: Promise<void> | null = null;
 
 /**
  * 緊急關閉函數（用於未捕獲的異常）
@@ -45,8 +54,19 @@ function emergencyShutdown(signal: string): void {
  * 處理未捕獲的 Promise Rejection
  */
 process.on('unhandledRejection', (reason, promise) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  
+  // 上報到 Sentry
+  if (shouldCaptureError(error)) {
+    Sentry.captureException(error, {
+      extra: {
+        promise: String(promise),
+      },
+    });
+  }
+  
   logger.error('[Process] Unhandled Promise Rejection', {
-    reason: reason instanceof Error ? reason.message : String(reason),
+    reason: error.message,
     promise: String(promise),
   });
 
@@ -63,6 +83,11 @@ process.on('unhandledRejection', (reason, promise) => {
  * 處理未捕獲的 Exception
  */
 process.on('uncaughtException', (error) => {
+  // 上報到 Sentry
+  if (shouldCaptureError(error)) {
+    Sentry.captureException(error);
+  }
+  
   logger.error('[Process] Uncaught Exception', {
     message: error.message,
     stack: error.stack,
@@ -77,6 +102,18 @@ process.on('uncaughtException', (error) => {
  * @param exitCode 退出代碼
  */
 async function shutdown(exitCode: number = 0): Promise<void> {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+
+  if (isShuttingDown) {
+    logger.warn('[Shutdown] Shutdown already in progress');
+    return;
+  }
+
+  isShuttingDown = true;
+
+  shutdownPromise = (async () => {
   logger.info(`[Shutdown] Starting graceful shutdown (exit code: ${exitCode})`);
 
   try {
@@ -103,7 +140,18 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 3. 關閉 Discord 客戶端
+    // 3. 關閉 RateLimiter（由主 shutdown 統一管理）
+    try {
+      buttonRateLimiter.destroy();
+      autocompleteRateLimiter.destroy();
+      logger.info('[Shutdown] Rate limiters destroyed');
+    } catch (error) {
+      logger.error('[Shutdown] Error destroying rate limiters', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 4. 關閉 Discord 客戶端
     try {
       if (global.client?.isReady) {
         await global.client.destroy();
@@ -115,31 +163,31 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 4. 關閉 OpenCode HTTP 伺服器
+    // 5. 關閉 SDK Adapter
     try {
-      const { getOpenCodeClient } = await import('../services/OpenCodeClient.js');
-      const openCodeClient = getOpenCodeClient();
-      await openCodeClient.cleanupAll();
-      logger.info('[Shutdown] OpenCode servers stopped');
+      const { getOpenCodeSDKAdapter } = await import('../services/OpenCodeSDKAdapter.js');
+      const sdkAdapter = getOpenCodeSDKAdapter();
+      await sdkAdapter.destroy();
+      logger.info('[Shutdown] SDK Adapter destroyed');
     } catch (error) {
-      logger.error('[Shutdown] Error stopping OpenCode servers', {
+      logger.error('[Shutdown] Error destroying SDK Adapter', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
 
-    // 5. 關閉 SSE 連線
+    // 6. 關閉 Event Stream
     try {
-      const { getSSEClient } = await import('../services/SSEClient.js');
-      const sseClient = getSSEClient();
-      sseClient.disconnect();
-      logger.info('[Shutdown] SSE connections closed');
+      const { getEventStreamAdapter } = await import('../services/EventStreamFactory.js');
+      const eventStreamAdapter = getEventStreamAdapter();
+      eventStreamAdapter.disconnect();
+      logger.info('[Shutdown] Event stream connections closed');
     } catch (error) {
-      logger.error('[Shutdown] Error closing SSE connections', {
+      logger.error('[Shutdown] Error closing event stream connections', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
 
-    // 6. 關閉 SQLite 資料庫
+    // 7. 關閉 SQLite 資料庫
     try {
       const { SQLiteDatabase } = await import('../database/SQLiteDatabase.js');
       const db = SQLiteDatabase.getInstance();
@@ -153,13 +201,23 @@ async function shutdown(exitCode: number = 0): Promise<void> {
       });
     }
 
-    // 7. 關閉舊的 JSON 資料庫（向後相容）
+    // 8. 關閉舊的 JSON 資料庫（向後相容）
     try {
       const { Database } = await import('../database/index.js');
       await Database.getInstance().close();
       logger.info('[Shutdown] JSON database closed');
     } catch (error) {
       logger.error('[Shutdown] Error closing JSON database', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 9. 刷新 Sentry 緩衝區
+    try {
+      await Sentry.flush(2000);
+      logger.info('[Shutdown] Sentry flushed');
+    } catch (error) {
+      logger.error('[Shutdown] Error flushing Sentry', {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -172,6 +230,9 @@ async function shutdown(exitCode: number = 0): Promise<void> {
   } finally {
     process.exit(exitCode);
   }
+  })();
+
+  return shutdownPromise;
 }
 
 // 全域 client 參考（用於關閉時存取）
@@ -180,12 +241,12 @@ declare global {
 }
 
 // 監聽終端訊號
-process.on('SIGINT', () => {
+process.once('SIGINT', () => {
   logger.info('[Process] Received SIGINT');
   shutdown(0);
 });
 
-process.on('SIGTERM', () => {
+process.once('SIGTERM', () => {
   logger.info('[Process] Received SIGTERM');
   shutdown(0);
 });
@@ -199,7 +260,27 @@ process.on('SIGTERM', () => {
 async function initializeServices(_config: ReturnType<typeof loadConfig>): Promise<void> {
   logger.info('[Bootstrap] Initializing services...');
 
-  // 1. 初始化 JSON 資料庫（向後相容）
+  // 1. 初始化 SDK
+  try {
+    const { initializeOpenCodeServerManager, initializeOpenCodeSDKAdapter } = await import('../services/index.js');
+    
+    initializeOpenCodeServerManager();
+    
+    const sdkAdapter = initializeOpenCodeSDKAdapter();
+    const projectPath = process.env.OPENCODE_PROJECT_PATH || process.cwd();
+    
+    await sdkAdapter.initialize({
+      projectPath,
+      port: 4096,
+    });
+    
+    logger.info('[Bootstrap] SDK 適配器已初始化');
+  } catch (error) {
+    logger.error('[Bootstrap] SDK 初始化失敗', { error });
+    throw error;
+  }
+
+  // 2. 初始化 JSON 資料庫（向後相容）
   try {
     const { Database } = await import('../database/index.js');
     await Database.getInstance().initialize();
@@ -236,11 +317,60 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
     throw error;
   }
 
-  // 3. 初始化 Project Manager
+  // 4. 初始化 Project Manager
   try {
-    await initializeProjectManager({
-      dataPath: process.env.PROJECTS_PATH || './data/projects',
+    const projectDataPath = process.env.PROJECTS_PATH || path.join(process.cwd(), 'data', 'projects.json');
+    
+    // 確保資料目錄存在
+    const dataDir = path.dirname(projectDataPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    
+    // 解析允許的基礎路徑（支持多個路徑，用冒號分隔）
+    const allowedPathsStr = process.env.ALLOWED_PROJECT_PATHS;
+    const allowedBasePaths = allowedPathsStr 
+      ? allowedPathsStr.split(':').map(p => path.resolve(p.trim())).filter(p => p)
+      : undefined;
+    
+    // 初始化 ProjectManager
+    const projectManager = initializeProjectManager({
+      dataPath: projectDataPath,
+      allowedBasePaths,
     });
+    
+    // 設置保存回調 - 將資料寫入 JSON 檔案
+    projectManager.setSaveCallback(async (data) => {
+      try {
+        await fs.promises.writeFile(projectDataPath, JSON.stringify(data, null, 2), 'utf-8');
+        logger.debug('[Bootstrap] Project data saved to file');
+      } catch (error) {
+        logger.error('[Bootstrap] Failed to save project data', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
+    
+    // 設置載入回調 - 從 JSON 檔案讀取資料
+    projectManager.setLoadCallback(async () => {
+      try {
+        if (fs.existsSync(projectDataPath)) {
+          const content = await fs.promises.readFile(projectDataPath, 'utf-8');
+          return JSON.parse(content);
+        }
+        return null;
+      } catch (error) {
+        logger.error('[Bootstrap] Failed to load project data', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    });
+    
+    // 初始化並載入既有資料
+    await projectManager.initialize();
+    
     logger.info('[Bootstrap] Project Manager initialized');
   } catch (error) {
     logger.error('[Bootstrap] Failed to initialize Project Manager', {
@@ -313,6 +443,18 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
     logger.info('[Bootstrap] Session Queue Integration initialized');
   } catch (error) {
     logger.warn('[Bootstrap] Session Queue Integration initialization skipped', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  // 9. 初始化 Thread Manager
+  try {
+    const { SQLiteDatabase } = await import('../database/SQLiteDatabase.js');
+    const sqliteDb = SQLiteDatabase.getInstance();
+    await initializeThreadManager(sqliteDb);
+    logger.info('[Bootstrap] Thread Manager initialized');
+  } catch (error) {
+    logger.warn('[Bootstrap] Thread Manager initialization skipped', {
       error: error instanceof Error ? error.message : String(error),
     });
   }

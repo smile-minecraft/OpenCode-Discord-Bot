@@ -11,6 +11,7 @@ import { ModalHandler, MultiStepFormManager, createModalHandlerResult } from '..
 function createMockModalInteraction(customId: string, fields: Array<{ customId: string; value: string }> = []) {
   const replyFn = vi.fn().mockResolvedValue(undefined);
   const followUpFn = vi.fn().mockResolvedValue(undefined);
+  const deferReplyFn = vi.fn().mockResolvedValue(undefined);
 
   // Mock TextInputComponent
   const mockComponents = fields.map(field => ({
@@ -31,6 +32,7 @@ function createMockModalInteraction(customId: string, fields: Array<{ customId: 
     replied: false,
     reply: replyFn,
     followUp: followUpFn,
+    deferReply: deferReplyFn,
   };
 }
 

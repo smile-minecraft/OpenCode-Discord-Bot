@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc && cp -r src/database/*.sql dist/database/",
-    "start": "node dist/bot/index.js",
-    "dev": "tsx src/bot/index.ts",
+    "start": "node --import ./instrument.mjs dist/bot/index.js",
+    "dev": "tsx --import ./instrument.mjs src/bot/index.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -19,6 +19,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@opencode-ai/sdk": "^1.2.27",
+    "@sentry/node": "^10.43.0",
     "@types/uuid": "^10.0.0",
     "better-sqlite3": "^12.8.0",
     "discord.js": "^14.18.0",

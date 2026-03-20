@@ -14,6 +14,7 @@ import {
 } from 'discord.js';
 import { getPassthroughService } from '../services/PassthroughService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
+import { captureCommandError } from '../utils/sentryHelper.js';
 
 // ============== Command Builder ==============
 
@@ -57,24 +58,42 @@ export async function handleCodeCommand(interaction: ChatInputCommandInteraction
   // 獲取 Passthrough 服務
   const passthroughService = getPassthroughService();
 
-  switch (subcommand) {
-    case 'toggle':
-      await handleToggle(interaction, passthroughService, channelId);
-      break;
-    case 'status':
-      await handleStatus(interaction, passthroughService, channelId);
-      break;
-    case 'enable':
-      await handleEnable(interaction, passthroughService, channelId);
-      break;
-    case 'disable':
-      await handleDisable(interaction, passthroughService, channelId);
-      break;
-    default:
-      await interaction.reply({
-        content: '❌ 未知的子指令',
-        flags: [MessageFlags.Ephemeral],
-      });
+  try {
+    switch (subcommand) {
+      case 'toggle':
+        await handleToggle(interaction, passthroughService, channelId);
+        break;
+      case 'status':
+        await handleStatus(interaction, passthroughService, channelId);
+        break;
+      case 'enable':
+        await handleEnable(interaction, passthroughService, channelId);
+        break;
+      case 'disable':
+        await handleDisable(interaction, passthroughService, channelId);
+        break;
+      default:
+        await interaction.reply({
+          content: '❌ 未知的子指令',
+          flags: [MessageFlags.Ephemeral],
+        });
+    }
+  } catch (error) {
+    // 捕獲錯誤到 Sentry
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        `code ${subcommand}`,
+        { subcommand, channelId },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+    await interaction.reply({
+      content: `❌ 執行指令失敗: ${errorMessage}`,
+      flags: [MessageFlags.Ephemeral],
+    });
   }
 }
 

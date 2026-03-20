@@ -5,9 +5,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 日誌文件配置常量
-const LOG_MAX_SIZE = 5 * 1024 * 1024;  // 5MB
-const LOG_MAX_FILES = 5;
+// P2-11: 從環境變數讀取日誌配置，預設值保持向後兼容
+const LOG_MAX_SIZE = parseInt(process.env.LOG_MAX_SIZE || String(5 * 1024 * 1024), 10);  // 預設 5MB
+const LOG_MAX_FILES = parseInt(process.env.LOG_MAX_FILES || '5', 10);  // 預設 5 個文件
+// P2-12: 從環境變數讀取日誌路徑，預設值保持向後兼容
+const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, '../../logs');
 
 // 日誌格式
 const logFormat = format.combine(
@@ -56,16 +58,16 @@ const logger = winston.createLogger({
     new transports.Console({
       format: consoleFormat
     }),
-    // 錯誤日誌文件
+    // 錯誤日誌文件 (P2-12: 使用可配置的 LOG_DIR)
     new transports.File({
-      filename: path.join(__dirname, '../../logs/error.log'),
+      filename: path.join(LOG_DIR, 'error.log'),
       level: 'error',
       maxsize: LOG_MAX_SIZE,
       maxFiles: LOG_MAX_FILES
     }),
-    // 合併日誌文件
+    // 合併日誌文件 (P2-12: 使用可配置的 LOG_DIR)
     new transports.File({
-      filename: path.join(__dirname, '../../logs/combined.log'),
+      filename: path.join(LOG_DIR, 'combined.log'),
       maxsize: LOG_MAX_SIZE,
       maxFiles: LOG_MAX_FILES
     })

@@ -15,6 +15,12 @@ export {
   InfoEmbedBuilder,
 } from './EmbedBuilder.js';
 
+// Tool Execution Embed Builder
+export {
+  ToolExecutionColors,
+  ToolExecutionEmbedBuilder,
+} from './ToolExecutionEmbedBuilder.js';
+
 // Action Row Builders
 export {
   ButtonStyles,

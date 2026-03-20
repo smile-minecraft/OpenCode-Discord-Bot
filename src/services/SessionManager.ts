@@ -1,18 +1,25 @@
 /**
  * Session 管理服務
- * @description 管理 OpenCode Session 生命週期，使用本地 OpenCode 伺服器
+ * @description 管理 OpenCode Session 生命週期，使用 OpenCode SDK
+ * 
+ * 使用新版 OpenCodeSDKAdapter (基於 @opencode-ai/sdk)
  */
 
 import path from 'path';
 import os from 'os';
+import { Database } from '../database/index.js';
 import { Session, SessionStatus, SessionMetadata } from '../database/models/Session.js';
 import { v4 as uuidv4 } from 'uuid';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import logger from '../utils/logger.js';
-import { ProviderService } from './ProviderService.js';
-import { OpenCodeClient, getOpenCodeClient } from './OpenCodeClient.js';
-import { PROVIDERS, type OpenCodeProviderType } from './OpenCodeCloudClient.js';
-import { MODEL_CONFIG, OPENCODE_SERVER } from '../config/constants.js';
+import { MODEL_CONFIG } from '../config/constants.js';
+import { getOpenCodeServerManager, OpenCodeServerManager } from './OpenCodeServerManager.js';
+import { getOpenCodeSDKAdapter, OpenCodeSDKAdapter, type SendPromptParams } from './OpenCodeSDKAdapter.js';
+import { getSessionEventManager, SessionEventManager } from './SessionEventManager.js';
+import { getStreamingMessageManager } from './StreamingMessageManager.js';
+import { captureSessionError } from '../utils/sentryHelper.js';
+import { getProjectManager } from './ProjectManager.js';
+import { getThreadManager } from './ThreadManager.js';
 
 // ============== 類型定義 ==============
 
@@ -48,140 +55,68 @@ export interface SessionExecutionResult {
   error?: string;
 }
 
+export interface ClearSessionsResult {
+  totalSessions: number;
+  deletedSessions: number;
+  deletedThreads: number;
+  failed: number;
+}
+
 // ============== Session 管理器 ==============
 
-/**
- * Session 管理器類
- * @description 負責管理 OpenCode Session 的生命週期，使用本地 OpenCode 伺服器
- */
-export class SessionManager {
-  /** 活躍的 Session 映射 */
-  private activeSessions: Map<string, Session> = new Map();
-  /** 頻道 ID 到 Session ID 集合的映射（用於快速查詢） */
-  private channelSessions: Map<string, Set<string>> = new Map();
-  /** Provider Service 實例 */
-  private providerService: ProviderService;
-  /** SQLite 資料庫實例 */
-  private sqliteDb: SQLiteDatabase;
-  /** OpenCode Client 實例 */
-  private openCodeClient: OpenCodeClient;
+  /**
+   * Session 管理器類
+   * @description 負責管理 OpenCode Session 的生命週期，使用 OpenCode SDK
+   */
+  export class SessionManager {
+    /** 活躍的 Session 映射 */
+    private activeSessions: Map<string, Session> = new Map();
+    /** 頻道 ID 到 Session ID 集合的映射（用於快速查詢） */
+    private channelSessions: Map<string, Set<string>> = new Map();
+    /** SQLite 資料庫實例 */
+    private sqliteDb: SQLiteDatabase;
+    /** 清理定時器 */
+    private cleanupInterval: NodeJS.Timeout | null = null;
+    
+  /** SDK Adapter */
+  private sdkAdapter: OpenCodeSDKAdapter;
+  /** Session Event Manager */
+  private sessionEventManager: SessionEventManager;
   /** 預設模型 */
   private readonly defaultModel = MODEL_CONFIG.DEFAULT;
-  /** 預設 Agent */
-  private readonly defaultAgent = 'general';
-  /** 預設端口範圍開始 */
-  private readonly portRangeStart = OPENCODE_SERVER.PORT_RANGE_START;
-  /** 預設端口範圍結束 */
-  private readonly portRangeEnd = OPENCODE_SERVER.PORT_RANGE_END;
-  /** 當前分配的端口 */
-  private allocatedPorts: Set<number> = new Set();
-  /** 頻道 ID 到端口的映射 */
-  private channelPortMap: Map<string, number> = new Map();
-  /** 端口分配鎖（用於防止 Race Condition） */
-  private portAllocationLock: Map<string, Promise<number>> = new Map();
+    /** OpenCode 伺服器管理器 */
+    private readonly serverManager: OpenCodeServerManager;
 
-  /**
-   * 創建 Session 管理器實例
-   */
-  constructor() {
-    this.providerService = ProviderService.getInstance();
-    this.sqliteDb = SQLiteDatabase.getInstance();
-    this.openCodeClient = getOpenCodeClient();
+    /**
+     * 創建 Session 管理器實例
+     */
+    constructor() {
+      this.sqliteDb = SQLiteDatabase.getInstance();
+      this.serverManager = getOpenCodeServerManager();
+      this.sdkAdapter = getOpenCodeSDKAdapter();
+      this.sessionEventManager = getSessionEventManager();
+      
+      logger.info('[SessionManager] 使用 SDK Adapter');
 
-    // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
-    // 這裡只檢查狀態，不負責初始化
-    if (!this.sqliteDb.isReady()) {
-      logger.warn('[SessionManager] SQLite 資料庫尚未初始化，某些功能可能無法正常工作');
-    }
-  }
-
-  /**
-   * 分配可用端口
-   * @param channelId - Discord 頻道 ID
-   * @returns 分配的端口號
-   */
-  async allocatePort(channelId: string): Promise<number> {
-    // 檢查是否已經為此頻道分配了端口
-    const existingPort = this.channelPortMap.get(channelId);
-    if (existingPort && !this.allocatedPorts.has(existingPort)) {
-      // 端口可能被釋放了，重新分配
-      this.channelPortMap.delete(channelId);
-    } else if (existingPort) {
-      logger.debug(`[SessionManager] 重用現有端口: ${existingPort} for channel: ${channelId}`);
-      return existingPort;
-    }
-
-    // 使用全域鎖防止 Race Condition - 確保所有頻道的端口分配串行化
-    const lockKey = 'global:portAllocation';
-    const existingLock = this.portAllocationLock.get(lockKey);
-    if (existingLock) {
-      logger.debug(`[SessionManager] 等待現有端口分配完成 for channel: ${channelId}`);
-      return existingLock.then(() => {
-        // 等待完成後，重新檢查是否有可用的端口
-        return this.allocatePort(channelId);
-      });
-    }
-
-    // 創建分配Promise並設置全域鎖
-    const allocationPromise = this.doAllocatePort(channelId);
-    this.portAllocationLock.set(lockKey, allocationPromise);
-
-    try {
-      const port = await allocationPromise;
-      return port;
-    } finally {
-      this.portAllocationLock.delete(lockKey);
-    }
-  }
-
-  /**
-   * 執行實際的端口分配
-   * @param channelId - Discord 頻道 ID
-   * @returns 分配的端口號
-   */
-  private async doAllocatePort(channelId: string): Promise<number> {
-    // 查找可用端口
-    for (let port = this.portRangeStart; port <= this.portRangeEnd; port++) {
-      if (!this.allocatedPorts.has(port)) {
-        // 檢查端口是否已被佔用
-        try {
-          const isRunning = await this.openCodeClient.isServerRunning(port);
-          if (isRunning) {
-            continue; // 端口已被佔用
-          }
-        } catch {
-          // 如果檢查失敗，假設端口可用
-        }
-
-        this.allocatedPorts.add(port);
-        this.channelPortMap.set(channelId, port);
-        logger.debug(`[SessionManager] 分配端口: ${port} for channel: ${channelId}`);
-        return port;
+      // 注意：SQLite 資料庫應該在應用啟動時由 bot/index.ts 初始化
+      // 這裡只檢查狀態，不負責初始化
+      if (!this.sqliteDb.isReady()) {
+        logger.warn('[SessionManager] SQLite 資料庫尚未初始化，某些功能可能無法正常工作');
       }
+
+      // P1-6: 啟動定時清理機制，每 5 分鐘清理一次已結束的 Session
+      this.cleanupInterval = setInterval(() => this.cleanupEndedSessions(), 5 * 60 * 1000);
+      // 防止定時器阻止程序退出
+      this.cleanupInterval.unref();
+      logger.debug('[SessionManager] Session 清理定時器已啟動 (5 分鐘間隔)');
     }
-    throw new Error('沒有可用的埠號');
-  }
 
   /**
-   * 釋放端口
-   * @param port - 要釋放的端口號
-   * @param channelId - 可選的頻道 ID，用於清除映射
+   * 獲取伺服器端口
+   * @returns 伺服器端口號
    */
-  private releasePort(port: number, channelId?: string): void {
-    this.allocatedPorts.delete(port);
-    // 如果提供了 channelId，則清除映射
-    if (channelId) {
-      this.channelPortMap.delete(channelId);
-    } else {
-      // 否則遍歷找到對應的 channelId
-      for (const [ch, p] of this.channelPortMap.entries()) {
-        if (p === port) {
-          this.channelPortMap.delete(ch);
-          break;
-        }
-      }
-    }
-    logger.debug(`[SessionManager] 釋放端口: ${port}`);
+  private getPort(): number {
+    return this.serverManager.getPort();
   }
 
   /**
@@ -189,7 +124,7 @@ export class SessionManager {
    */
   async createSession(options: CreateSessionOptions): Promise<Session> {
     const sessionId = this.generateSessionId();
-    const guildId = options.guildId;
+    const resolvedAgent = options.agent?.trim() || await this.getDefaultAgentForGuild(options.guildId);
 
     // 創建 Session 實例
     const session = new Session({
@@ -199,79 +134,95 @@ export class SessionManager {
       status: 'pending',
       prompt: options.prompt,
       model: options.model || this.defaultModel,
-      agent: options.agent || this.defaultAgent,
+      agent: resolvedAgent,
       projectPath: options.projectPath || this.getDefaultProjectPath(options.channelId),
     });
 
     // 標記為啟動中
     session.start(sessionId, session.model, session.agent);
 
-    // 註冊到活動列表
-    this.activeSessions.set(sessionId, session);
+    // 注意：不要在此處立即註冊到 activeSessions
+    // 應該在 SDK 創建成功後才註冊，避免 Race Condition
 
-    // 更新頻道索引
-    const channelSessionSet = this.channelSessions.get(options.channelId) || new Set();
-    channelSessionSet.add(sessionId);
-    this.channelSessions.set(options.channelId, channelSessionSet);
-
-    let port: number | undefined;
+    const port = this.getPort();
 
     try {
-      // 1. 分配端口
-      port = await this.allocatePort(options.channelId);
-
-      // 2. 啟動 OpenCode 伺服器
-      await this.openCodeClient.startServer(session.projectPath, port);
-      logger.info(`[SessionManager] OpenCode 伺服器已啟動於端口 ${port}`);
-
-      // 3. 檢查並獲取 Provider API Key（如有）
-      const model = options.model || this.defaultModel;
-      const providerInfo = await this.findProviderForModel(guildId, model);
-
-      // 4. 如果有 Provider API Key，設定認證
-      if (providerInfo) {
+      // 1. 確保 OpenCode 伺服器正在運行
+      if (!this.serverManager.getIsRunning()) {
         try {
-          await this.openCodeClient.setProviderAuth(port, providerInfo.providerId, providerInfo.apiKey);
-          logger.info(`[SessionManager] 已設定 Provider 認證: ${providerInfo.providerId}`);
+          await this.serverManager.smartStart(session.projectPath);
+          logger.info(`[SessionManager] OpenCode 伺服器已啟動於端口 ${port}`);
         } catch (error) {
-          logger.warn(`[SessionManager] 設定 Provider 認證失敗:`, error);
-          // 繼續執行，認證失敗不影響 Session 創建
+          logger.error('[SessionManager] 伺服器啟動失敗', { error });
+          session.fail('無法啟動 OpenCode 伺服器，請檢查配置');
+          await this.saveSession(session);
+          throw error;
         }
       }
 
-      // 5. 創建 Session
-      const openCodeSessionInfo = await this.openCodeClient.createSession(port, {
-        model: session.model,
-        agent: session.agent,
-        projectPath: session.projectPath,
-        initialPrompt: session.prompt,
+      // 1.5 確保 SDK Adapter 已初始化
+      if (!this.sdkAdapter.isInitialized()) {
+        await this.sdkAdapter.initialize({
+          projectPath: session.projectPath,
+          port: port,
+        });
+        logger.info('[SessionManager] SDK Adapter 已初始化');
+      }
+
+      // 2. 創建 Session (使用 SDK Adapter)
+      const openCodeSession = await this.sdkAdapter.createSession({
+        directory: session.projectPath,
+        title: session.prompt ? session.prompt.substring(0, 50) : undefined,
       });
 
-      // 6. 更新 Session 資訊
-      session.opencodeSessionId = openCodeSessionInfo.id;
-      (session.metadata as SessionMetadata & { opencodeSessionId?: string }).opencodeSessionId = openCodeSessionInfo.id;
-      (session.metadata as SessionMetadata & { providerId?: string }).providerId = providerInfo?.providerId;
+      // 3. 更新 Session 資訊
+      session.opencodeSessionId = openCodeSession.id;
+      (session.metadata as SessionMetadata & { opencodeSessionId?: string }).opencodeSessionId = openCodeSession.id;
       (session.metadata as SessionMetadata & { port?: number }).port = port;
       session.markRunning();
 
-      // 7. 保存到資料庫
+      // 4. 保存到資料庫
       await this.saveSession(session);
 
-      logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSessionInfo.id}, Port: ${port}`);
+      // 5. 只有在 SDK 創建成功後才註冊到活動列表 (避免 Race Condition)
+      this.activeSessions.set(sessionId, session);
+
+      // 6. 更新頻道索引
+      const channelSessionSet = this.channelSessions.get(options.channelId) || new Set();
+      channelSessionSet.add(sessionId);
+      this.channelSessions.set(options.channelId, channelSessionSet);
+
+      // Session 事件在真正發送 prompt 前才延遲訂閱，避免空 Session 產生多餘訂閱。
+
+      logger.info(`[SessionManager] Session ${sessionId} 啟動成功，OpenCode Session ID: ${openCodeSession.id}, Port: ${port}`);
     } catch (error) {
       logger.error(`[SessionManager] 啟動 Session ${sessionId} 失敗:`, error);
-      
-      // 清理：停止伺服器並釋放端口
-      if (port) {
-        try {
-          await this.openCodeClient.stopServer(port);
-        } catch {
-          // 忽略停止錯誤
-        }
-        this.releasePort(port, options.channelId);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, options.guildId, {
+          action: 'createSession',
+          channelId: options.channelId,
+          userId: options.userId,
+          projectPath: session.projectPath,
+        });
       }
-      
+
+      // 嘗試清理 SDK session 如果已創建
+      if (session.opencodeSessionId) {
+        try {
+          logger.info(`[SessionManager] 嘗試清理 SDK Session: ${session.opencodeSessionId}`);
+          // Note: SDK 可能沒有 delete 方法，但我們應該嘗試中止
+          // await this.sdkAdapter.abortSession(session.opencodeSessionId);
+        } catch (cleanupError) {
+          logger.warn('[SessionManager] 清理 SDK Session 失敗:', cleanupError);
+        }
+      }
+
+      // 保存失敗狀態
       session.fail(error instanceof Error ? error.message : '未知錯誤');
+      await this.saveSession(session);
+      throw error; // Re-throw so caller knows it failed
     }
 
     return session;
@@ -306,32 +257,24 @@ export class SessionManager {
     }
 
     // 恢復 Session
-    const port = (session.metadata as SessionMetadata & { port?: number })?.port;
-    
-    if (!port) {
-      throw new Error(`Session ${sessionId} 缺少端口資訊，無法恢復`);
-    }
-
     try {
       // 檢查伺服器是否仍在運行
-      if (!(await this.openCodeClient.isServerRunning(port))) {
-        // 嘗試重新啟動伺服器
-        await this.openCodeClient.startServer(session.projectPath, port);
-        
-        // 重新設定 Provider 認證（如有）
-        const providerId = (session.metadata as SessionMetadata & { providerId?: string })?.providerId;
-        if (providerId) {
-          const apiKey = await this.providerService.getDecryptedApiKey(session.channelId, providerId);
-          if (apiKey) {
-            await this.openCodeClient.setProviderAuth(port, providerId, apiKey);
-          }
-        }
+      if (!this.serverManager.getIsRunning()) {
+        await this.serverManager.smartStart(session.projectPath);
       }
 
       session.resume();
       logger.info(`[SessionManager] Session ${sessionId} 恢復成功`);
     } catch (error) {
       logger.error(`[SessionManager] 恢復 Session ${sessionId} 失敗:`, error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, undefined, {
+          action: 'resumeSession',
+        });
+      }
+
       session.fail(error instanceof Error ? error.message : '未知錯誤');
     }
 
@@ -340,15 +283,22 @@ export class SessionManager {
 
   /**
    * 終止 Session
+   * @param sessionId Session ID（可選）
+   * @param channelId 頻道 ID（當 sessionId 未提供時使用）
    */
-  async abortSession(sessionId?: string): Promise<Session | null> {
-    // 如果沒有指定 sessionId，嘗試獲取當前頻道的活躍 Session
-    if (!sessionId) {
-      const activeSession = this.getActiveSessionByChannel(sessionId || '');
+  async abortSession(sessionId?: string, channelId?: string): Promise<Session | null> {
+    // 如果沒有指定 sessionId，嘗試從 channelId 獲取當前頻道的活躍 Session
+    if (!sessionId && channelId) {
+      const activeSession = this.getActiveSessionByChannel(channelId);
       if (!activeSession) {
         return null;
       }
       sessionId = activeSession.sessionId;
+    }
+
+    // 如果仍然沒有 sessionId，無法繼續
+    if (!sessionId) {
+      return null;
     }
 
     const session = this.activeSessions.get(sessionId);
@@ -357,24 +307,44 @@ export class SessionManager {
       return null;
     }
 
-    // 嘗試停止 OpenCode 伺服器
-    const port = (session.metadata as SessionMetadata & { port?: number })?.port;
-    
-    if (port) {
+    // 先嘗試通知 SDK 中止執行，避免遠端仍在運行
+    if (session.opencodeSessionId) {
       try {
-        await this.openCodeClient.stopServer(port);
-        this.releasePort(port, session.channelId);
-        logger.info(`[SessionManager] OpenCode 伺服器已停止於端口 ${port}`);
-      } catch (error) {
-        logger.warn(`[SessionManager] 停止 OpenCode 伺服器失敗:`, error);
+        await this.sdkAdapter.abortSession({ sessionId: session.opencodeSessionId });
+      } catch (sdkError) {
+        logger.warn(`[SessionManager] SDK abort failed for ${sessionId}:`, sdkError);
       }
     }
+
+    // 注意：在單一伺服器架構下，我們不會停止伺服器
+    // 因為其他 Session 可能仍在使用
+    // 伺服器會在應用關閉時統一停止
 
     // 更新 Session 狀態
     session.abort();
 
     // 保存最終狀態
     await this.saveSession(session);
+
+    // 先清理串流，避免 typing indicator 在 Session 結束後殘留。
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for session ${sessionId}:`, streamingError);
+      }
+    }
+
+    // Call ThreadManager cleanup
+    try {
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        await threadManager.cleanupSession(sessionId);
+      }
+    } catch (cleanupError) {
+      logger.warn(`[SessionManager] Thread cleanup failed for session ${sessionId}:`, cleanupError);
+    }
 
     // 從活動列表移除
     this.activeSessions.delete(sessionId);
@@ -386,6 +356,268 @@ export class SessionManager {
       if (channelSessionSet.size === 0) {
         this.channelSessions.delete(session.channelId);
       }
+    }
+
+    // 取消 Session 事件訂閱 (Phase 2)
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 取消 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
+    }
+
+    return session;
+  }
+
+  /**
+   * 中斷 Session（不刪除 Session，僅停止當前推理並標記 paused）
+   * @param sessionId Session ID
+   */
+  async interruptSession(sessionId: string): Promise<Session | null> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    if (session.opencodeSessionId) {
+      await this.sdkAdapter.abortSession({ sessionId: session.opencodeSessionId });
+    }
+
+    session.pause();
+    await this.saveSession(session);
+
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for interrupted session ${sessionId}:`, streamingError);
+      }
+    }
+
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 中斷 Session ${sessionId} 取消訂閱失敗:`, unsubscribeError);
+    }
+
+    return session;
+  }
+
+  /**
+   * 終止並刪除 Session（含 SDK Session）
+   * @param sessionId Session ID
+   * @param options 刪除選項
+   */
+  async terminateAndDeleteSession(
+    sessionId: string,
+    options: {
+      /** 是否同時刪除 Discord thread，預設 true */
+      deleteThread?: boolean;
+    } = {}
+  ): Promise<Session | null> {
+    const { deleteThread = true } = options;
+
+    let session = this.activeSessions.get(sessionId) || null;
+    if (!session) {
+      session = await this.loadSession(sessionId);
+    }
+    if (!session) {
+      return null;
+    }
+
+    if (session.opencodeSessionId) {
+      try {
+        await this.sdkAdapter.abortSession({ sessionId: session.opencodeSessionId });
+      } catch (abortError) {
+        logger.warn(`[SessionManager] SDK abort before delete failed for ${sessionId}:`, abortError);
+      }
+
+      try {
+        await this.sdkAdapter.deleteSession({ sessionId: session.opencodeSessionId });
+      } catch (deleteError) {
+        logger.warn(`[SessionManager] SDK delete failed for ${sessionId}:`, deleteError);
+      }
+    }
+
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for deleted session ${sessionId}:`, streamingError);
+      }
+    }
+
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 刪除 Session ${sessionId} 取消訂閱失敗:`, unsubscribeError);
+    }
+
+    try {
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        if (deleteThread) {
+          const fallbackThreadId = session.threadId;
+          if (fallbackThreadId) {
+            try {
+              await threadManager.deleteDiscordThread(fallbackThreadId);
+            } finally {
+              // 優先用 threadId/sessionId 雙路清理映射，避免映射缺失導致殘留
+              threadManager.deleteThread(fallbackThreadId);
+              threadManager.deleteThread(sessionId);
+            }
+          } else {
+            await threadManager.deleteSessionThread(sessionId);
+          }
+          session.threadId = null;
+        } else {
+          await threadManager.cleanupSession(sessionId);
+        }
+      }
+    } catch (threadError) {
+      logger.warn(`[SessionManager] Session ${sessionId} thread delete/cleanup failed:`, threadError);
+    }
+
+    // Mark local state as aborted for in-memory consumers.
+    // We intentionally skip persisting here because this method
+    // immediately deletes the session record from database.
+    session.abort();
+
+    this.activeSessions.delete(sessionId);
+    const channelSessionSet = this.channelSessions.get(session.channelId);
+    if (channelSessionSet) {
+      channelSessionSet.delete(sessionId);
+      if (channelSessionSet.size === 0) {
+        this.channelSessions.delete(session.channelId);
+      }
+    }
+
+    if (this.sqliteDb.isReady()) {
+      try {
+        this.sqliteDb.deleteSession(sessionId);
+      } catch (dbError) {
+        logger.warn(`[SessionManager] Database delete failed for session ${sessionId}:`, dbError);
+      }
+    }
+
+    return session;
+  }
+
+  /**
+   * 清除所有 Session 與關聯討論串
+   */
+  async clearAllSessions(
+    options: {
+      deleteThreads?: boolean;
+    } = {}
+  ): Promise<ClearSessionsResult> {
+    const { deleteThreads = true } = options;
+    const targets = new Map<string, Session>();
+
+    // 1) 記憶體中的 active sessions
+    for (const [sessionId, session] of this.activeSessions.entries()) {
+      targets.set(sessionId, session);
+    }
+
+    // 2) 資料庫中的 sessions（補齊非 active）
+    if (this.sqliteDb.isReady()) {
+      try {
+        const persisted = this.sqliteDb.loadAllSessions();
+        for (const session of persisted) {
+          targets.set(session.sessionId, session);
+        }
+      } catch (error) {
+        logger.warn('[SessionManager] clearAllSessions 載入資料庫 Session 失敗', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let deletedSessions = 0;
+    let failed = 0;
+
+    for (const sessionId of targets.keys()) {
+      try {
+        const deleted = await this.terminateAndDeleteSession(sessionId, {
+          deleteThread: deleteThreads,
+        });
+        if (deleted) {
+          deletedSessions++;
+        }
+      } catch (error) {
+        failed++;
+        logger.warn(`[SessionManager] clearAllSessions 刪除 Session 失敗: ${sessionId}`, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    let deletedThreads = 0;
+    // 最後再做一次 thread 殘留清理（只在 deleteThreads=true）
+    if (deleteThreads) {
+      try {
+        const threadManager = getThreadManager();
+        if (threadManager.isReady()) {
+          const threadResult = await threadManager.clearAllSessionThreads();
+          deletedThreads = threadResult.deleted;
+          failed += threadResult.failed;
+        }
+      } catch (error) {
+        logger.warn('[SessionManager] clearAllSessions 清理殘留討論串失敗', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    // 清理索引（保險）
+    this.channelSessions.clear();
+
+    return {
+      totalSessions: targets.size,
+      deletedSessions,
+      deletedThreads,
+      failed,
+    };
+  }
+
+  /**
+   * 標記 Session 為失敗並清理活躍狀態
+   * @param sessionId Session ID
+   * @param errorMessage 錯誤訊息
+   */
+  async failSession(sessionId: string, errorMessage: string): Promise<Session | null> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    session.fail(errorMessage);
+    await this.saveSession(session);
+
+    if (session.threadId) {
+      try {
+        const streamingManager = getStreamingMessageManager();
+        streamingManager.removeStream(sessionId, session.threadId);
+      } catch (streamingError) {
+        logger.warn(`[SessionManager] Streaming cleanup failed for failed session ${sessionId}:`, streamingError);
+      }
+    }
+
+    this.activeSessions.delete(sessionId);
+
+    const channelSessionSet = this.channelSessions.get(session.channelId);
+    if (channelSessionSet) {
+      channelSessionSet.delete(sessionId);
+      if (channelSessionSet.size === 0) {
+        this.channelSessions.delete(session.channelId);
+      }
+    }
+
+    try {
+      this.sessionEventManager.unsubscribe(sessionId);
+    } catch (unsubscribeError) {
+      logger.warn(`[SessionManager] 取消失敗 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
     }
 
     return session;
@@ -445,6 +677,18 @@ export class SessionManager {
   }
 
   /**
+   * 查詢 Session（優先記憶體，找不到則嘗試資料庫）
+   * @param sessionId Session ID
+   */
+  async findSession(sessionId: string): Promise<Session | null> {
+    const active = this.activeSessions.get(sessionId);
+    if (active) {
+      return active;
+    }
+    return this.loadSession(sessionId);
+  }
+
+  /**
    * 獲取頻道的活躍 Session
    */
   getActiveSessionByChannel(channelId: string): Session | undefined {
@@ -489,74 +733,44 @@ export class SessionManager {
     }
   }
 
-  // ============== 私有方法 ==============
-
   /**
-   * 生成 Session ID
+   * 更新 Session 資訊並保存到資料庫
+   * @param session 要更新的 Session 實例
    */
-  private generateSessionId(): string {
-    return `sess_${uuidv4().slice(0, 8)}`;
+  async updateSession(session: Session): Promise<void> {
+    session.updatedAt = new Date().toISOString();
+    await this.saveSession(session);
+    logger.debug(`[SessionManager] Session ${session.sessionId} updated and saved`);
   }
 
   /**
-   * 獲取預設專案路徑
+   * 更新 Session 設定（模型/Agent）
+   * @param sessionId Session ID
+   * @param updates 可更新項目
    */
-  private getDefaultProjectPath(channelId: string): string {
-    // 使用可配置的專案根目錄，優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
-    const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
-    return path.join(projectsRoot, channelId);
-  }
-
-  /**
-   * 查找適合模型的 Provider
-   * @param guildId - Guild ID
-   * @param model - 模型 ID
-   * @returns Provider ID 和 API Key
-   */
-  private async findProviderForModel(guildId: string, model: string): Promise<{ providerId: string; apiKey: string } | null> {
-    const providers = await this.providerService.getProviders(guildId);
-    
-    // 遍歷所有 connected providers
-    for (const [providerId, connection] of Object.entries(providers)) {
-      if (connection.connected && connection.apiKey) {
-        // 解密 API Key
-        const apiKey = await this.providerService.getDecryptedApiKey(guildId, providerId);
-        if (apiKey) {
-          // 檢查這個 provider 是否支持這個模型
-          // 簡單檢查：模型 ID 以 provider 的 modelPrefix 開頭
-          const providerDef = await this.getProviderDefinition(providerId as OpenCodeProviderType);
-          if (providerDef && model.startsWith(providerDef.modelPrefix.replace('/', ''))) {
-            return { providerId, apiKey };
-          }
-          
-          // 或者檢查 provider 是否在模型 ID 中
-          // 例如: opencode-go/kimi-k2.5 包含 opencode-go
-          if (model.includes(providerId)) {
-            return { providerId, apiKey };
-          }
-        }
-      }
+  async updateSessionSettings(
+    sessionId: string,
+    updates: {
+      model?: string;
+      agent?: string;
     }
-    
-    // 如果沒有找到特定的 provider，返回第一個可用的 connected provider
-    for (const [providerId, connection] of Object.entries(providers)) {
-      if (connection.connected && connection.apiKey) {
-        const apiKey = await this.providerService.getDecryptedApiKey(guildId, providerId);
-        if (apiKey) {
-          logger.info(`[SessionManager] Using provider ${providerId} as fallback for model ${model}`);
-          return { providerId, apiKey };
-        }
-      }
+  ): Promise<Session | null> {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) {
+      return null;
     }
-    
-    return null;
-  }
 
-  /**
-   * 獲取 Provider 定義
-   */
-  private async getProviderDefinition(providerId: OpenCodeProviderType): Promise<{ modelPrefix: string } | null> {
-    return PROVIDERS[providerId] || null;
+    if (typeof updates.model === 'string' && updates.model.trim() !== '') {
+      session.model = updates.model.trim();
+    }
+
+    if (typeof updates.agent === 'string' && updates.agent.trim() !== '') {
+      session.agent = updates.agent.trim();
+    }
+
+    session.updateActivity();
+    await this.updateSession(session);
+    return session;
   }
 
   /**
@@ -574,18 +788,118 @@ export class SessionManager {
     }
 
     const opencodeSessionId = session.opencodeSessionId;
-    const port = (session.metadata as SessionMetadata & { port?: number })?.port;
+    const promptModel = this.resolvePromptModel(session.model);
 
-    if (!opencodeSessionId || !port) {
+    if (!opencodeSessionId) {
       throw new Error('Session 資訊不完整');
     }
 
     try {
-      await this.openCodeClient.sendPrompt(port, opencodeSessionId, prompt);
+      await this.sdkAdapter.sendPrompt({
+        sessionId: opencodeSessionId,
+        prompt,
+        model: promptModel,
+        agent: session.agent,
+      });
       session.updateActivity();
     } catch (error) {
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, undefined, {
+          action: 'sendPrompt',
+          channelId: session.channelId,
+          userId: session.userId,
+          projectPath: session.projectPath,
+        });
+      }
+
       throw error;
     }
+  }
+
+  /**
+   * 將內部模型 ID 轉換為 SDK 所需的 model 物件
+   * @param modelId 模型 ID
+   */
+  private resolvePromptModel(modelId: string): SendPromptParams['model'] | undefined {
+    const normalized = modelId.trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    if (normalized.includes('/')) {
+      const [providerID, ...modelParts] = normalized.split('/');
+      const modelID = modelParts.join('/');
+      if (providerID && modelID) {
+        return { providerID, modelID };
+      }
+      return undefined;
+    }
+
+    // 對於未帶 provider 的模型（例如 nemotron-3-super-free），預設走 opencode provider。
+    return {
+      providerID: 'opencode',
+      modelID: normalized,
+    };
+  }
+
+  // ============== 私有方法 ==============
+
+  /**
+   * 生成 Session ID
+   */
+  private generateSessionId(): string {
+    return `sess_${uuidv4().slice(0, 8)}`;
+  }
+
+  /**
+   * 獲取預設專案路徑
+   */
+  private getDefaultProjectPath(channelId: string): string {
+    // 優先檢查是否有綁定的專案
+    try {
+      const projectManager = getProjectManager();
+      const channelBinding = projectManager.getChannelBinding(channelId);
+      
+      if (channelBinding) {
+        const project = projectManager.getProject(channelBinding.projectId);
+        if (project) {
+          logger.debug(`[SessionManager] Using bound project path: ${project.path} for channel: ${channelId}`);
+          return project.path;
+        }
+      }
+    } catch (error) {
+      // ProjectManager 可能尚未初始化，使用 fallback
+      logger.debug(`[SessionManager] ProjectManager not available, using default path`);
+    }
+    
+    // Fallback: 使用可配置的專案根目錄
+    // 優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
+    const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
+    return path.join(projectsRoot, channelId);
+  }
+
+  /**
+   * 獲取伺服器預設 Agent
+   * @description 優先使用 guild settings 的 defaultAgent，無法取得時才 fallback。
+   */
+  private async getDefaultAgentForGuild(guildId: string): Promise<string> {
+    try {
+      const db = Database.getInstance();
+      const guild = await db.getGuild(guildId);
+      const defaultAgent = guild?.settings?.defaultAgent?.trim();
+      if (defaultAgent) {
+        return defaultAgent;
+      }
+    } catch (error) {
+      logger.warn('[SessionManager] 讀取 guild 預設 Agent 失敗，將使用 fallback', {
+        guildId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    // 保底 fallback（僅在 guild 設定不存在或讀取失敗時使用）
+    return 'general';
   }
 
   /**
@@ -605,6 +919,14 @@ export class SessionManager {
       return session;
     } catch (error) {
       logger.error('[SessionManager] 載入 Session 失敗:', error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, sessionId, undefined, {
+          action: 'loadSession',
+        });
+      }
+
       return null;
     }
   }
@@ -623,6 +945,15 @@ export class SessionManager {
       logger.debug(`[SessionManager] Session ${session.sessionId} 已保存`);
     } catch (error) {
       logger.error('[SessionManager] 保存 Session 失敗:', error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, session.sessionId, undefined, {
+          action: 'saveSession',
+          channelId: session.channelId,
+          userId: session.userId,
+        });
+      }
     }
   }
 
@@ -633,6 +964,26 @@ export class SessionManager {
     for (const [sessionId, session] of this.activeSessions) {
       if (session.isEnded()) {
         this.saveSession(session);
+        
+        // Call ThreadManager cleanup
+        try {
+          if (session.threadId) {
+            const streamingManager = getStreamingMessageManager();
+            streamingManager.removeStream(sessionId, session.threadId);
+          }
+        } catch (streamingError) {
+          logger.warn(`[SessionManager] Streaming cleanup failed for session ${sessionId}:`, streamingError);
+        }
+
+        try {
+          const threadManager = getThreadManager();
+          if (threadManager.isReady()) {
+            threadManager.cleanupSession(sessionId);
+          }
+        } catch (cleanupError) {
+          logger.warn(`[SessionManager] Thread cleanup failed for session ${sessionId}:`, cleanupError);
+        }
+        
         this.activeSessions.delete(sessionId);
 
         // 從頻道索引移除
@@ -643,7 +994,29 @@ export class SessionManager {
             this.channelSessions.delete(session.channelId);
           }
         }
+
+        // 取消 Session 事件訂閱 (Phase 2)
+        try {
+          this.sessionEventManager.unsubscribe(sessionId);
+        } catch (unsubscribeError) {
+          logger.warn(`[SessionManager] 清理時取消 Session ${sessionId} 訂閱失敗:`, unsubscribeError);
+        }
       }
+    }
+  }
+
+  /**
+   * 清理 Session 相關資源（包括 Thread）
+   * @param sessionId Session ID
+   */
+  async cleanupSession(sessionId: string): Promise<void> {
+    try {
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        await threadManager.cleanupSession(sessionId);
+      }
+    } catch (cleanupError) {
+      logger.warn(`[SessionManager] Session ${sessionId} thread cleanup failed:`, cleanupError);
     }
   }
 
@@ -678,8 +1051,21 @@ export class SessionManager {
         
         logger.info(`[SessionManager] Session ${session.sessionId} 已恢復`);
       }
+
+      // 恢復完成後，恢復 thread mappings
+      const threadManager = getThreadManager();
+      if (threadManager.isReady()) {
+        threadManager.restoreMappings();
+      }
     } catch (error) {
       logger.error('[SessionManager] 恢復 Session 失敗:', error);
+
+      // Sentry 錯誤追蹤
+      if (error instanceof Error) {
+        captureSessionError(error, 'restore', undefined, {
+          action: 'restoreActiveSessions',
+        });
+      }
     }
   }
 

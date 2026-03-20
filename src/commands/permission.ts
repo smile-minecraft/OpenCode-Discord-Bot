@@ -13,6 +13,7 @@ import {
 } from 'discord.js';
 import { PermissionService } from '../services/PermissionService.js';
 import { Database } from '../database/index.js';
+import { captureCommandError } from '../utils/sentryHelper.js';
 
 /**
  * 權限指令構建器
@@ -471,27 +472,46 @@ async function handleCheck(interaction: ChatInputCommandInteraction): Promise<vo
 export async function executePermissionCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const subcommand = interaction.options.getSubcommand();
 
-  switch (subcommand) {
-    case 'check':
-      await handleCheck(interaction);
-      break;
-    case 'grant':
-      await handleGrant(interaction);
-      break;
-    case 'revoke':
-      await handleRevoke(interaction);
-      break;
-    case 'list':
-      await handleList(interaction);
-      break;
-    case 'mode':
-      await handleMode(interaction);
-      break;
-    default:
-      await interaction.reply({
-        content: '未知的子指令',
-        flags: [MessageFlags.Ephemeral],
-      });
+  try {
+    switch (subcommand) {
+      case 'check':
+        await handleCheck(interaction);
+        break;
+      case 'grant':
+        await handleGrant(interaction);
+        break;
+      case 'revoke':
+        await handleRevoke(interaction);
+        break;
+      case 'list':
+        await handleList(interaction);
+        break;
+      case 'mode':
+        await handleMode(interaction);
+        break;
+      default:
+        await interaction.reply({
+          content: '未知的子指令',
+          flags: [MessageFlags.Ephemeral],
+        });
+    }
+  } catch (error) {
+    // Only capture actual Error instances
+    if (error instanceof Error) {
+      captureCommandError(
+        error,
+        interaction.commandName,
+        { subcommand },
+        interaction.user,
+        interaction.guild ?? undefined
+      );
+    }
+    
+    const errorMessage = error instanceof Error ? error.message : '未知錯誤';
+    await interaction.reply({
+      content: `❌ 執行指令失敗: ${errorMessage}`,
+      flags: [MessageFlags.Ephemeral],
+    });
   }
 }
 

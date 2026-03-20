@@ -1,30 +1,20 @@
 // Commands
 export * from './session.js';
 
-export { model } from './model.js';
-export { agent } from './agent.js';
-export { queueCommand, handleQueueCommand, buildQueueStatusMessage, buildQueueProgress } from './queue.js';
+// Prompt Command
+export { command as promptCommand, execute as handlePromptCommand } from './prompt.js';
+
+// Setup Command
+export { command as setupCommand, execute as handleSetupCommand } from './setup.js';
+
+// Help Command
+export { command as helpCommand, execute as handleHelpCommand } from './help.js';
+
+// Permission Command
+export { permissionCommand as permissionCommand, executePermissionCommand as handlePermissionCommand } from './permission.js';
 
 // Code Command (Passthrough)
 export { codeCommand, handleCodeCommand, createPassthroughActionRow } from './code.js';
 
-// Worktree Commands
-export {
-  worktreeCommand,
-  executeWorktreeCommand,
-  handleWorktreeButton,
-} from './worktree.js';
-
-// Project Commands
-export {
-  COMMAND_NAME,
-  COMMAND_DESCRIPTION,
-  createProjectCommand,
-  ProjectCommandHandler,
-  createProjectListEmbed,
-  createAddProjectModal,
-  ModalIds,
-} from './project.js';
-
-// Setup Command
-export { command as setupCommand, execute as handleSetupCommand, handleAutocomplete as handleSetupAutocomplete } from './setup.js';
+// Project Command
+export { createProjectCommand as projectCommand } from './project.js';

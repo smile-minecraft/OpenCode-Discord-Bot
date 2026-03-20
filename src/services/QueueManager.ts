@@ -146,6 +146,7 @@ export class QueueManager extends EventEmitter {
    */
   constructor(settings: Partial<QueueSettings> = {}) {
     super();
+    this.setMaxListeners(20);
     this.settings = { ...DEFAULT_SETTINGS, ...settings };
     log.info('[QueueManager] Initialized with settings', this.settings as unknown as Record<string, unknown>);
   }
@@ -180,7 +181,9 @@ export class QueueManager extends EventEmitter {
 
     // 如果未暫停且未在處理，開始處理
     if (!this.paused && !this.processing) {
-      this.processNext();
+      this.processNext().catch((error) => {
+        log.error('[QueueManager] Error in processNext', { error: error.message });
+      });
     }
 
     return task;
@@ -452,7 +455,9 @@ export class QueueManager extends EventEmitter {
       
       // 處理下一個任務
       this.currentTask = null;
-      this.processNext();
+      this.processNext().catch((error) => {
+        log.error('[QueueManager] Error in processNext', { error: error.message });
+      });
     } catch (error) {
       await this.handleTaskError(nextTask, error as Error);
     }
@@ -463,16 +468,25 @@ export class QueueManager extends EventEmitter {
    * @param task 要執行的任務
    */
   private async executeTask(task: QueueTask): Promise<void> {
+    let timeoutId: NodeJS.Timeout | null = null;
+    
     // 建立執行 Promise，可設定超時
     const executePromise = this.executeTaskLogic(task);
     
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         reject(new Error(`Task timeout after ${this.settings.taskTimeout}ms`));
       }, this.settings.taskTimeout);
     });
 
-    await Promise.race([executePromise, timeoutPromise]);
+    try {
+      await Promise.race([executePromise, timeoutPromise]);
+    } finally {
+      // 清除計時器防止泄漏
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
   }
 
   /**
@@ -515,7 +529,9 @@ export class QueueManager extends EventEmitter {
       });
       
       // 繼續處理下一個任務（會重試當前任務）
-      this.processNext();
+      this.processNext().catch((err) => {
+        log.error('[QueueManager] Error in processNext', { error: err.message });
+      });
     } else {
       // 超過最大重試次數，標記為失敗
       task.status = 'failed';
@@ -530,7 +546,9 @@ export class QueueManager extends EventEmitter {
       // 根據設定決定是否繼續
       if (this.settings.continueOnFailure) {
         this.currentTask = null;
-        this.processNext();
+        this.processNext().catch((err) => {
+          log.error('[QueueManager] Error in processNext', { error: err.message });
+        });
       } else {
         // 停止處理
         this.processing = false;

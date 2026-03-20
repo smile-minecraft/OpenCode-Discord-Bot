@@ -286,20 +286,19 @@ export class ButtonHandler {
     // 嘗試回應用戶
     if (error.options.showToUser) {
       try {
-        await error.interaction.reply({
-          content: error.options.customMessage || '處理此按鈕時發生錯誤',
-          flags: [MessageFlags.Ephemeral],
-        });
-      } catch {
-        // 如果無法回應，嘗試 followUp
-        try {
+        if (error.interaction.replied || error.interaction.deferred) {
           await error.interaction.followUp({
             content: error.options.customMessage || '處理此按鈕時發生錯誤',
             flags: [MessageFlags.Ephemeral],
           });
-        } catch {
-          // 忽略最終失敗
+        } else {
+          await error.interaction.reply({
+            content: error.options.customMessage || '處理此按鈕時發生錯誤',
+            flags: [MessageFlags.Ephemeral],
+          });
         }
+      } catch {
+        // 忽略最終失敗
       }
     }
 

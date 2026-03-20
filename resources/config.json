@@ -10,7 +10,7 @@
     }
   },
   "model": {
-    "default": "anthropic/claude-sonnet-4-20250514"
+    "default": "opencode/minimax-m2.5-free"
   },
   "timeouts": {
     "http": 30000,

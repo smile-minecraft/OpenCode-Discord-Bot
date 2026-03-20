@@ -13,7 +13,7 @@ import {
   GuildTextBasedChannel,
 } from 'discord.js';
 import { PermissionService, type ToolExecutionRequest, type ApprovalAction, type ToolApprovalRecord } from './PermissionService.js';
-import { getOpenCodeClient } from './OpenCodeClient.js';
+import { getOpenCodeSDKAdapter } from './OpenCodeSDKAdapter.js';
 import { SQLiteDatabase } from '../database/SQLiteDatabase.js';
 import { getSessionManager } from './SessionManager.js';
 import { log as logger } from '../utils/logger.js';
@@ -372,14 +372,13 @@ export class ToolApprovalService {
       return;
     }
 
-    // 發送 HTTP 請求
-    const openCodeClient = getOpenCodeClient();
-    await openCodeClient.sendToolApproval(
-      port,
-      opencodeSessionId,
-      request.requestId || request.sessionId,
-      approved
-    );
+    // 發送審批結果（使用 SDK Adapter）
+    const sdkAdapter = getOpenCodeSDKAdapter();
+    await sdkAdapter.sendToolApproval({
+      sessionId: opencodeSessionId,
+      requestId: request.requestId || request.sessionId,
+      approved,
+    });
 
     logger.info(`[ToolApprovalService] 已發送審批結果到 OpenCode: ${request.toolName} = ${approved}`);
   }
@@ -500,6 +499,7 @@ export class ToolApprovalService {
     const record: ToolApprovalRecord = {
       id: `approval_${Date.now()}`,
       sessionId: request.sessionId,
+      guildId: request.guildId,
       toolName: request.toolName,
       pattern: '*',
       action,

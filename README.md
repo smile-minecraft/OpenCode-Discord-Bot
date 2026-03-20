@@ -69,6 +69,18 @@ npm install
 cp .env.example .env
 ```
 
+編輯 `.env` 檔案，填入以下必要資訊：
+
+```env
+# Discord Bot
+DISCORD_TOKEN=your_discord_bot_token
+CLIENT_ID=your_discord_client_id
+
+# OpenCode Configuration
+OPENCODE_API_KEY=your_opencode_api_key
+OPENCODE_API_URL=http://localhost:3000
+```
+
 ### 4. 編譯與啟動
 
 ```bash
@@ -90,8 +102,9 @@ npm run dev
 ### 開始使用
 
 1. 邀請 Bot 到你的伺服器
-2. 使用 `/session start` 開始新的 OpenCode Session
-3. 透過 Discord 互動按鈕管理 Session
+2. 確保 `.env` 已正確配置 `DISCORD_TOKEN` 和 `OPENCODE_API_KEY`
+3. 使用 `/session start` 開始新的 OpenCode Session
+4. 透過 Discord 互動按鈕管理 Session
 
 ### 互動元件
 
@@ -106,8 +119,9 @@ Bot 支援以下 Discord 互動元件：
 |---------|------|------|
 | `DISCORD_TOKEN` | Discord Bot Token | 是 |
 | `CLIENT_ID` | Discord Application Client ID | 否 |
+| `OPENCODE_API_KEY` | OpenCode API Key | 是 |
+| `OPENCODE_API_URL` | OpenCode API URL | 否（預設 `http://localhost:3000`） |
 | `GUILD_ID` | 測試伺服器 ID（開發用） | 否 |
-| `DATABASE_URL` | 資料庫連線 URL（可選） | 否 |
 | `NODE_ENV` | 環境模式：`development`, `production`, `test` | 否 |
 | `LOG_LEVEL` | 日誌級別：`debug`, `info`, `warn`, `error` | 否 |
 

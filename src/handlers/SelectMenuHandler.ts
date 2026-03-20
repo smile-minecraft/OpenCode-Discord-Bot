@@ -202,6 +202,9 @@ export class SelectMenuHandler {
         if (this.options.logCalls) {
           console.warn(`[SelectMenuHandler] No handler found for: ${customId} (${componentType})`);
         }
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({ content: '無法找到對應的處理器', flags: ['Ephemeral'] }).catch(() => {});
+        }
         return;
       }
 
@@ -408,21 +411,19 @@ export class SelectMenuHandler {
 
     if (options.showToUser && interaction.isRepliable()) {
       try {
-        await interaction.reply({
-          content: options.customMessage || '處理您的請求時發生錯誤，請稍後再試。',
-          flags: ['Ephemeral'],
-        });
-      } catch {
-        // 如果無法回复，嘗試編輯回覆
-        try {
-          if (interaction.message) {
-            await interaction.editReply({
-              content: options.customMessage || '處理您的請求時發生錯誤，請稍後再試。',
-            });
-          }
-        } catch {
-          // 忽略
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({
+            content: options.customMessage || '處理您的請求時發生錯誤，請稍後再試。',
+            flags: ['Ephemeral'],
+          });
+        } else {
+          await interaction.reply({
+            content: options.customMessage || '處理您的請求時發生錯誤，請稍後再試。',
+            flags: ['Ephemeral'],
+          });
         }
+      } catch {
+        // 忽略
       }
     }
   }

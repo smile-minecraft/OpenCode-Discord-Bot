@@ -1,5 +1,7 @@
 import { EmbedBuilder, User } from 'discord.js';
+import * as Sentry from '@sentry/node';
 import logger from './logger.js';
+import { shouldCaptureError } from './sentryHelper.js';
 
 // ==================== 自訂錯誤類別 ====================
 
@@ -18,6 +20,18 @@ export class BotError extends Error {
     this.isOperational = true;
     this.timestamp = new Date();
     Error.captureStackTrace(this, this.constructor);
+  }
+
+  /**
+   * 上報錯誤到 Sentry（僅非業務錯誤）
+   */
+  captureToSentry(): void {
+    // 檢查是否應該上報
+    if (!shouldCaptureError(this)) {
+      return;
+    }
+
+    Sentry.captureException(this);
   }
 
   toJSON() {
@@ -100,6 +114,29 @@ export class SessionError extends BotError {
   }
 }
 
+/**
+ * Thread 映射錯誤 - 用於 Thread 映射操作錯誤
+ */
+export class ThreadMappingError extends BotError {
+  public readonly threadId?: string;
+  public readonly sessionId?: string;
+
+  constructor(message: string, threadId?: string, sessionId?: string) {
+    super(message, 'THREAD_MAPPING_ERROR');
+    this.name = 'ThreadMappingError';
+    this.threadId = threadId;
+    this.sessionId = sessionId;
+  }
+
+  toJSON() {
+    return {
+      ...super.toJSON(),
+      threadId: this.threadId,
+      sessionId: this.sessionId
+    };
+  }
+}
+
 // ==================== 錯誤回應格式化 ====================
 
 /**
@@ -114,6 +151,7 @@ function getErrorSeverity(error: Error): ErrorSeverity {
   if (error instanceof PermissionError) return 'medium';
   if (error instanceof ValidationError) return 'low';
   if (error instanceof SessionError) return 'medium';
+  if (error instanceof ThreadMappingError) return 'medium';
   if (error instanceof BotError) return 'low';
   return 'high';
 }
@@ -162,6 +200,16 @@ export function formatErrorAsEmbed(error: Error, user?: User): EmbedBuilder {
     title = '⚠️ 系統錯誤';
     description = '發生了一個意外錯誤，請稍後再試。';
     
+    // 上報到 Sentry
+    if (shouldCaptureError(error)) {
+      Sentry.captureException(error, {
+        extra: {
+          errorId,
+          userId: user?.id,
+        },
+      });
+    }
+    
     if (isProduction) {
       // 生產環境：僅記錄錯誤 ID 和訊息
       logger.error(`[${errorId}] Unhandled error`, { 
@@ -186,6 +234,9 @@ export function formatErrorAsEmbed(error: Error, user?: User): EmbedBuilder {
         break;
       case 'SessionError':
         title = '⏳ 會話錯誤';
+        break;
+      case 'ThreadMappingError':
+        title = '🧵 Thread 映射錯誤';
         break;
       default:
         title = '⚠️ 操作失敗';
@@ -231,10 +282,12 @@ export function formatErrorMessage(error: Error): string {
 
 /**
  * 處理未捕獲的 Promise Rejection
+ * 注意：此函數僅保留 logger 記錄，Sentry 上報由 index.ts 統一處理
  */
 export function handleUnhandledRejection(): void {
   process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));
+    
     logger.error('Unhandled Promise Rejection', {
       message: error.message,
       stack: error.stack,
@@ -245,6 +298,7 @@ export function handleUnhandledRejection(): void {
 
 /**
  * 處理未捕獲的 Exception
+ * 注意：此函數僅保留 logger 記錄，Sentry 上報由 index.ts 統一處理
  */
 export function handleUncaughtException(): void {
   process.on('uncaughtException', (error: Error) => {
@@ -252,8 +306,10 @@ export function handleUncaughtException(): void {
       message: error.message,
       stack: error.stack
     });
+    
     // 優雅退出
-    process.exit(1);
+    process.kill(process.pid, 'SIGTERM');
+    setTimeout(() => process.exit(1), 10000); // 10秒後強制退出
   });
 }
 
@@ -279,6 +335,11 @@ export function createErrorHandler() {
         code: (error as BotError).code
       });
     } else {
+      // 上報到 Sentry
+      if (shouldCaptureError(error)) {
+        Sentry.captureException(error);
+      }
+      
       logger.error(`Unexpected error: ${error.message}`, {
         stack: error.stack,
         type: error.name
@@ -295,6 +356,7 @@ export default {
   PermissionError,
   ValidationError,
   SessionError,
+  ThreadMappingError,
   formatErrorAsEmbed,
   formatErrorMessage,
   initErrorHandling,

@@ -70,6 +70,7 @@ export class ModalHandler implements IModalHandler {
    * 處理 Modal 提交
    */
   async handle(interaction: ModalSubmitInteraction): Promise<void> {
+    await interaction.deferReply({ ephemeral: true }).catch(() => {});
     const modalId = interaction.customId;
 
     // 先嘗試精確匹配
