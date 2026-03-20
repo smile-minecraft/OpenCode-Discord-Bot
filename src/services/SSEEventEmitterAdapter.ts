@@ -556,9 +556,9 @@ export class SSEEventEmitterAdapter
       case 'tool_request':
         this.emitEvent('tool_request', {
           sessionId,
-          toolName: this.extractToolName(props),
-          args: props.tool_args || props.toolArgs || {},
-          requestId: props.request_id || props.requestId || '',
+          toolName: this.extractToolNameFromLegacy(props),
+          args: this.extractArgsFromLegacy(props),
+          requestId: this.extractRequestIdFromLegacy(props),
           status: this.inferToolStatus(event.type, props),
           result: props.result,
           error: typeof props.error === 'string' ? props.error : undefined,
@@ -651,20 +651,77 @@ export class SSEEventEmitterAdapter
 
   /**
    * 推導工具名稱（兼容不同 SDK payload）
+   * Legacy tool_request 事件專用，支援：tool_name, toolName, tool, name
    */
-  private extractToolName(props: SDKEventProperties): string {
-    if (typeof props.tool_name === 'string' && props.tool_name.trim()) return props.tool_name;
-    if (typeof props.toolName === 'string' && props.toolName.trim()) return props.toolName;
+  private extractToolNameFromLegacy(props: SDKEventProperties): string {
+    // 白名單依序檢查
+    const candidates = [
+      props.tool_name,
+      props.toolName,
+      (props as Record<string, unknown>).tool,
+      (props as Record<string, unknown>).name,
+    ];
 
-    const info = props.info && typeof props.info === 'object'
-      ? (props.info as Record<string, unknown>)
-      : null;
-    if (info) {
-      const byName = info.tool_name ?? info.toolName ?? info.name;
-      if (typeof byName === 'string' && byName.trim()) return byName;
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
     }
 
     return 'unknown';
+  }
+
+  /**
+   * 從 tool_request 事件提取 requestId
+   * Legacy tool_request 事件專用，支援：request_id, requestId, call_id, callID, callId, id
+   */
+  private extractRequestIdFromLegacy(props: SDKEventProperties): string {
+    // 白名單依序檢查
+    const candidates = [
+      props.request_id,
+      props.requestId,
+      (props as Record<string, unknown>).call_id,
+      (props as Record<string, unknown>).callID,
+      (props as Record<string, unknown>).callId,
+      (props as Record<string, unknown>).id,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+
+    return '';
+  }
+
+  /**
+   * 從 tool_request 事件提取 args
+   * Legacy tool_request 事件專用，支援：tool_args, toolArgs, args, arguments, parameters, input
+   * 若為 JSON 字串則嘗試 parse 成 object
+   */
+  private extractArgsFromLegacy(props: SDKEventProperties): Record<string, unknown> {
+    // 白名單依序檢查
+    const keys = ['tool_args', 'toolArgs', 'args', 'arguments', 'parameters', 'input'];
+
+    for (const key of keys) {
+      const value = (props as Record<string, unknown>)[key];
+      if (value !== undefined) {
+        // 物件類型直接返回
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          return value as Record<string, unknown>;
+        }
+        // string JSON 嘗試解析
+        if (typeof value === 'string' && value.trim()) {
+          const parsed = this.tryParseJSON(value);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+          }
+        }
+      }
+    }
+
+    return {};
   }
 
   /**
@@ -889,7 +946,11 @@ export class SSEEventEmitterAdapter
         : {};
 
       const status = this.extractToolStatusFromState(state, part);
-      const args = this.extractToolArgsFromState(state);
+      // 優先從 state 提取 args，若為空則從 part 上 fallback
+      let args = this.extractToolArgsFromState(state);
+      if (Object.keys(args).length === 0) {
+        args = this.extractToolArgsFromPart(part);
+      }
       const result = state.output !== undefined ? state.output : undefined;
       const error = typeof state.error === 'string' ? state.error : undefined;
 
@@ -979,12 +1040,62 @@ export class SSEEventEmitterAdapter
   }
 
   /**
-   * 從 state.input 中提取工具參數
+   * 從 state 中提取工具參數
+   * 支援：state.input, state.args, state.arguments, state.parameters
+   * 並支援 string JSON 解析
    */
   private extractToolArgsFromState(state: Record<string, unknown>): Record<string, unknown> {
-    const input = state.input;
-    if (input && typeof input === 'object' && !Array.isArray(input)) {
-      return input as Record<string, unknown>;
+    // 嘗試多個可能的參數來源
+    const sources = ['input', 'args', 'arguments', 'parameters'];
+    for (const key of sources) {
+      const value = state[key];
+      if (value !== undefined) {
+        // 物件類型直接返回
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          return value as Record<string, unknown>;
+        }
+        // string JSON 嘗試解析
+        if (typeof value === 'string' && value.trim()) {
+          const parsed = this.tryParseJSON(value);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+          }
+        }
+      }
+    }
+    return {};
+  }
+
+  /**
+   * 嘗試解析 JSON 字串
+   */
+  private tryParseJSON(str: string): unknown | null {
+    try {
+      return JSON.parse(str);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 從 part 上提取工具參數（fallback）
+   */
+  private extractToolArgsFromPart(part: Record<string, unknown>): Record<string, unknown> {
+    // 優先檢查 part.input / part.args / part.arguments / part.parameters
+    const sources = ['input', 'args', 'arguments', 'parameters'];
+    for (const key of sources) {
+      const value = part[key];
+      if (value !== undefined) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          return value as Record<string, unknown>;
+        }
+        if (typeof value === 'string' && value.trim()) {
+          const parsed = this.tryParseJSON(value);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+          }
+        }
+      }
     }
     return {};
   }

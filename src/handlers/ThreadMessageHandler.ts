@@ -54,10 +54,21 @@ export class ThreadMessageHandler {
 
     // 驗證 session 是否存在且仍在運行
     const sessionManager = getSessionManager();
-    const session = sessionManager.getSession(sessionId);
+    let session = sessionManager.getSession(sessionId);
+
+    // Bug 2 Fix: 如果 session 在 activeSessions 中找不到，嘗試從資料庫恢復
+    // 這發生在 Bot 重啟後，session 已持久化但尚未恢復到記憶體
+    if (!session) {
+      logger.info(`[ThreadMessageHandler] Session ${sessionId} not in memory, attempting DB recovery...`);
+      const recovered = await sessionManager.findSession(sessionId);
+      if (recovered && !recovered.isEnded()) {
+        session = recovered;
+        logger.info(`[ThreadMessageHandler] Session ${sessionId} recovered from DB, status: ${session.status}`);
+      }
+    }
 
     if (!session) {
-      // Session 不存在
+      // Session 真的不存在
       logger.warn(`[ThreadMessageHandler] Session not found: ${sessionId}`);
       try {
         await message.reply({

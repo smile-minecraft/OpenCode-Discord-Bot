@@ -200,6 +200,169 @@ describe('SessionButtonHandler', () => {
     });
   });
 
+  describe('handleStopWithId() - 停止 Session（帶 ID）', () => {
+    /**
+     * Bug 3 測試：session:stop:<id> 應該正確解析 session ID 並中斷 session
+     * 原本會因為 extractSessionId 只接受 'pause' 前綴而失敗
+     */
+    it('應該正確處理 session:stop:<id> 按鈕（成功路徑）', async () => {
+      const mockSession = createMockSession({ status: 'running' });
+      const mockSessionManager = {
+        findSession: vi.fn().mockResolvedValue(mockSession),
+        interruptSession: vi.fn().mockResolvedValue(mockSession),
+      } as any;
+
+      const mockInteraction: any = {
+        customId: 'session:stop:test-session-456',
+        channelId: 'test-channel',
+        user: { id: 'test-user' },
+        guildId: 'test-guild',
+        deferred: false,
+        replied: false,
+        deferReply: vi.fn().mockImplementation(async function(this: any) {
+          this.deferred = true;
+          return undefined;
+        }),
+        editReply: vi.fn().mockResolvedValue(undefined),
+        reply: vi.fn().mockResolvedValue(undefined),
+        message: {
+          edit: vi.fn().mockResolvedValue(undefined),
+        },
+        client: {
+          channels: {
+            fetch: vi.fn().mockResolvedValue({
+              messages: {
+                fetch: vi.fn().mockResolvedValue({
+                  edit: vi.fn().mockResolvedValue(undefined),
+                }),
+              },
+            }),
+          },
+        },
+      };
+
+      // Mock guild members fetch for permission check
+      mockInteraction.guild = {
+        members: {
+          fetch: vi.fn().mockResolvedValue({
+            permissions: {
+              has: vi.fn().mockReturnValue(false),
+            },
+          }),
+        },
+      };
+
+      const h = new SessionButtonHandler(mockSessionManager);
+      await h.handleStopWithId(mockInteraction);
+
+      // 驗證成功流程
+      expect(mockInteraction.deferReply).toHaveBeenCalled();
+      expect(mockSessionManager.findSession).toHaveBeenCalledWith('test-session-456');
+      expect(mockSessionManager.interruptSession).toHaveBeenCalledWith('test-session-456');
+      expect(mockInteraction.editReply).toHaveBeenCalled();
+      const editCall = (mockInteraction.editReply as any).mock.calls[0][0];
+      expect(editCall.content).toContain('test-session-456');
+      expect(editCall.content).toContain('已中斷');
+    });
+
+    it('應該正確處理 session:stop:<id> 無效 session ID', async () => {
+      const mockSessionManager = {
+        findSession: vi.fn().mockResolvedValue(null),
+      } as any;
+
+      const mockInteraction: any = {
+        customId: 'session:stop:nonexistent-session',
+        channelId: 'test-channel',
+        user: { id: 'test-user' },
+        guildId: 'test-guild',
+        deferred: false,
+        deferReply: vi.fn().mockImplementation(async function(this: any) {
+          this.deferred = true;
+          return undefined;
+        }),
+        editReply: vi.fn().mockResolvedValue(undefined),
+        reply: vi.fn().mockResolvedValue(undefined),
+      };
+
+      mockInteraction.guild = {
+        members: {
+          fetch: vi.fn().mockResolvedValue({
+            permissions: {
+              has: vi.fn().mockReturnValue(false),
+            },
+          }),
+        },
+      };
+
+      const h = new SessionButtonHandler(mockSessionManager);
+      await h.handleStopWithId(mockInteraction);
+
+      // 驗證錯誤回覆（不再有 parse error）
+      expect(mockInteraction.deferReply).toHaveBeenCalled();
+      expect(mockInteraction.editReply).toHaveBeenCalled();
+      const editCall = (mockInteraction.editReply as any).mock.calls[0][0];
+      expect(editCall.content).toContain('❌');
+      expect(editCall.content).not.toContain('無法解析'); // 不應該是解析錯誤
+    });
+  });
+
+  describe('handlePauseWithId() - 暫停 Session（帶 ID）', () => {
+    it('應該正確處理 session:pause:<id> 按鈕', async () => {
+      const mockSession = createMockSession({ status: 'running' });
+      const mockSessionManager = {
+        findSession: vi.fn().mockResolvedValue(mockSession),
+        interruptSession: vi.fn().mockResolvedValue(mockSession),
+      } as any;
+
+      const mockInteraction: any = {
+        customId: 'session:pause:test-session-789',
+        channelId: 'test-channel',
+        user: { id: 'test-user' },
+        guildId: 'test-guild',
+        deferred: false,
+        replied: false,
+        deferReply: vi.fn().mockImplementation(async function(this: any) {
+          this.deferred = true;
+          return undefined;
+        }),
+        editReply: vi.fn().mockResolvedValue(undefined),
+        reply: vi.fn().mockResolvedValue(undefined),
+        message: {
+          edit: vi.fn().mockResolvedValue(undefined),
+        },
+        client: {
+          channels: {
+            fetch: vi.fn().mockResolvedValue({
+              messages: {
+                fetch: vi.fn().mockResolvedValue({
+                  edit: vi.fn().mockResolvedValue(undefined),
+                }),
+              },
+            }),
+          },
+        },
+      };
+
+      mockInteraction.guild = {
+        members: {
+          fetch: vi.fn().mockResolvedValue({
+            permissions: {
+              has: vi.fn().mockReturnValue(false),
+            },
+          }),
+        },
+      };
+
+      const h = new SessionButtonHandler(mockSessionManager);
+      await h.handlePauseWithId(mockInteraction);
+
+      expect(mockInteraction.deferReply).toHaveBeenCalled();
+      expect(mockSessionManager.findSession).toHaveBeenCalledWith('test-session-789');
+      expect(mockSessionManager.interruptSession).toHaveBeenCalledWith('test-session-789');
+      expect(mockInteraction.editReply).toHaveBeenCalled();
+    });
+  });
+
   describe('handleResume() - 恢復 Session', () => {
     it('應該正確處理恢復按鈕（有暂停的 session）', async () => {
       const mockSession = createMockSession({ status: 'paused' });

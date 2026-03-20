@@ -364,21 +364,33 @@ describe('SSEEventEmitterAdapter', () => {
       });
     });
 
-    it('session.idle 應該映射到 session_complete 事件', async () => {
-      const event: SDKEvent = {
-        type: 'session.idle',
-        properties: { session_id: 'session-123' },
-      };
+    it('session.idle 應該映射到 waiting 事件', async () => {
+      // 加入第二個事件防止流立即結束觸發 session_complete
+      const events: SDKEvent[] = [
+        { type: 'session.idle', properties: { session_id: 'session-123' } },
+        { type: 'message.created', properties: { session_id: 'session-123', content: 'dummy' } },
+      ];
       
-      const mockEventStream = createMockEventStream([event]);
-      const handler = vi.fn();
-      adapter.on('session_complete', handler);
+      const mockEventStream = createMockEventStream(events);
+      const waitingHandler = vi.fn();
+      const completeHandler = vi.fn();
+      adapter.on('waiting', waitingHandler);
+      adapter.on('session_complete', completeHandler);
       
       adapter.start(mockEventStream, 'session-123');
       
       await vi.waitFor(() => {
-        expect(handler).toHaveBeenCalled();
+        expect(waitingHandler).toHaveBeenCalled();
       });
+      
+      // session.idle 映射到 waiting，不應直接映射到 session_complete
+      // (session_complete 只應在流結束後觸發)
+      expect(waitingHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'waiting',
+          data: expect.objectContaining({ sessionId: 'session-123' }),
+        })
+      );
     });
 
     it('error 應該映射到 error 事件', async () => {
@@ -1170,6 +1182,559 @@ describe('SSEEventEmitterAdapter', () => {
       });
 
       expect(toolHandler.mock.calls[0][0].data.toolName).toBe('ToolFromStateTool');
+    });
+  });
+
+  describe('工具 args 增強提取', () => {
+    it('state.args 應作為 args 的來源', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-1',
+          part: {
+            type: 'tool',
+            id: 'call-args-1',
+            tool: 'Read',
+            state: {
+              status: 'running',
+              args: { path: '/test.txt', encoding: 'utf-8' },
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ path: '/test.txt', encoding: 'utf-8' });
+    });
+
+    it('state.arguments 應作為 args 的來源', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-2',
+          part: {
+            type: 'tool',
+            id: 'call-args-2',
+            tool: 'Write',
+            state: {
+              status: 'running',
+              arguments: { path: '/output.txt', content: 'Hello World' },
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-2');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ path: '/output.txt', content: 'Hello World' });
+    });
+
+    it('state.parameters 應作為 args 的來源', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-3',
+          part: {
+            type: 'tool',
+            id: 'call-args-3',
+            tool: 'Bash',
+            state: {
+              status: 'running',
+              parameters: { command: 'ls -la', cwd: '/home' },
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-3');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ command: 'ls -la', cwd: '/home' });
+    });
+
+    it('string JSON 格式的 args 應該被解析', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-4',
+          part: {
+            type: 'tool',
+            id: 'call-args-4',
+            tool: 'Glob',
+            state: {
+              status: 'running',
+              input: '{"pattern":"**/*.ts","cwd":"/project"}',
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-4');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ pattern: '**/*.ts', cwd: '/project' });
+    });
+
+    it('part.input 應該作為 args 的 fallback', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-5',
+          part: {
+            type: 'tool',
+            id: 'call-args-5',
+            tool: 'Edit',
+            // state 為空，但 part.input 有值
+            input: { path: '/file.ts', oldText: 'foo', newText: 'bar' },
+            state: {
+              status: 'running',
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-5');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ path: '/file.ts', oldText: 'foo', newText: 'bar' });
+    });
+
+    it('part.args 應該作為 args 的 fallback', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-6',
+          part: {
+            type: 'tool',
+            id: 'call-args-6',
+            tool: 'Search',
+            // state.input 為空，但 part.args 有值
+            args: { query: 'opencode bot', limit: 10 },
+            state: {
+              status: 'running',
+              input: {},
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-6');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ query: 'opencode bot', limit: 10 });
+    });
+
+    it('part 上的 string JSON 應該被解析', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-7',
+          part: {
+            type: 'tool',
+            id: 'call-args-7',
+            tool: 'Read',
+            // 整個 args 是 JSON 字串
+            args: '{"path":"/config.json","encoding":"utf-8"}',
+            state: {
+              status: 'running',
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-7');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ path: '/config.json', encoding: 'utf-8' });
+    });
+
+    it('state.input 應該優先於 state.args', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-args-8',
+          part: {
+            type: 'tool',
+            id: 'call-args-8',
+            tool: 'Bash',
+            state: {
+              status: 'running',
+              input: { command: 'ls' }, // 優先
+              args: { command: 'echo' }, // 忽略
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-args-8');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({ command: 'ls' });
+    });
+  });
+
+  describe('legacy tool_request 事件 args/requestId/toolName 增強提取', () => {
+    it('tool_request 應從 args 欄位提取參數', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-1',
+          args: { path: '/src', pattern: '**/*.ts' },
+          request_id: 'req-legacy-1',
+          tool_name: 'Glob',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ path: '/src', pattern: '**/*.ts' });
+    });
+
+    it('tool_request 應從 input 欄位提取參數', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-2',
+          input: { content: 'Hello World', path: '/test.txt' },
+          requestId: 'req-legacy-2',
+          toolName: 'Write',
+        },
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-2');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ content: 'Hello World', path: '/test.txt' });
+    });
+
+    it('tool_request 應從 JSON 字串解析 args', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-3',
+          args: '{"command":"ls -la","cwd":"/home"}',
+          request_id: 'req-legacy-3',
+          tool_name: 'Bash',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-3');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ command: 'ls -la', cwd: '/home' });
+    });
+
+    it('tool_request 應從 callID 欄位提取 requestId', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-4',
+          callID: 'call-abc123',
+          tool_name: 'Read',
+          tool_args: { path: '/file.txt' },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-4');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.requestId).toBe('call-abc123');
+    });
+
+    it('tool_request 應從 call_id 欄位提取 requestId', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-5',
+          call_id: 'call-xyz789',
+          tool_name: 'Edit',
+          args: {},
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-5');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.requestId).toBe('call-xyz789');
+    });
+
+    it('tool_request 應從 id 欄位提取 requestId', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-6',
+          id: 'req-id-from-id',
+          tool_name: 'Search',
+          toolArgs: { query: 'test' },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-6');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.requestId).toBe('req-id-from-id');
+    });
+
+    it('tool_request 應從 callId 欄位提取 requestId', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-callId',
+          callId: 'call-camel-123',
+          tool_name: 'Read',
+          tool_args: { path: '/file.txt' },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-callId');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.requestId).toBe('call-camel-123');
+    });
+
+    it('tool_request 應從 tool 欄位提取 toolName', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-7',
+          tool: 'CustomTool',
+          args: { param1: 'value1' },
+          request_id: 'req-legacy-7',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-7');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.toolName).toBe('CustomTool');
+    });
+
+    it('tool_request 應從 name 欄位提取 toolName', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-8',
+          name: 'NamedTool',
+          args: {},
+          requestId: 'req-legacy-8',
+        },
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-8');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.toolName).toBe('NamedTool');
+    });
+
+    it('tool_request 應從 arguments 欄位提取參數', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-9',
+          arguments: { url: 'https://example.com', method: 'GET' },
+          request_id: 'req-legacy-9',
+          tool_name: 'WebFetch',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-9');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ url: 'https://example.com', method: 'GET' });
+    });
+
+    it('tool_request 應從 parameters 欄位提取參數', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-10',
+          parameters: { timeout: 5000, retries: 3 },
+          request_id: 'req-legacy-10',
+          tool_name: 'HTTP',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-10');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ timeout: 5000, retries: 3 });
+    });
+
+    it('tool_request 參數白名單應有正確優先順序', async () => {
+      // toolArgs 優先於 input
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-11',
+          toolArgs: { from: 'toolArgs' },
+          input: { from: 'input' },
+          args: { from: 'args' },
+          request_id: 'req-legacy-11',
+          tool_name: 'Test',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-11');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      // toolArgs 應被使用（白名單順序）
+      expect(call.data.args).toEqual({ from: 'toolArgs' });
     });
   });
 });

@@ -674,13 +674,38 @@ export class OpenCodeSDKAdapter {
         query: directory ? { directory } : undefined,
       });
 
-      const rawAgents = (response as { data?: unknown }).data;
-      if (!Array.isArray(rawAgents)) {
+      const responseData = (response as { data?: unknown }).data;
+
+      // 嘗試從 response.data 或 response.data.agents 取得陣列
+      let rawAgents: unknown = null;
+
+      if (Array.isArray(responseData)) {
+        // Shape 1: response.data 是陣列
+        rawAgents = responseData;
+      } else if (responseData && typeof responseData === 'object') {
+        const responseObj = responseData as Record<string, unknown>;
+        if (Array.isArray(responseObj.agents)) {
+          // Shape 2: response.data.agents 是陣列
+          rawAgents = responseObj.agents;
+        } else {
+          // response.data 既不是陣列也不是有 agents 欄位的物件
+          const keys = Object.keys(responseObj);
+          logger.warn('[OpenCodeSDKAdapter] agents 回傳結構無法識別', {
+            keys,
+            type: typeof responseData,
+          });
+          return [];
+        }
+      } else {
+        // response.data 既非陣列也非物件
+        logger.warn('[OpenCodeSDKAdapter] agents 回傳資料型別不符', {
+          type: typeof responseData,
+        });
         return [];
       }
 
       const agents: SDKAgentInfo[] = [];
-      for (const rawAgent of rawAgents) {
+      for (const rawAgent of rawAgents as unknown[]) {
         if (!rawAgent || typeof rawAgent !== 'object') {
           continue;
         }

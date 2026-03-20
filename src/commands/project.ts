@@ -14,6 +14,7 @@ import {
   ActionRowBuilder,
   ModalActionRowComponentBuilder,
   MessageFlags,
+  ChannelType,
 } from 'discord.js';
 import { ProjectManager } from '../services/ProjectManager.js';
 import { Colors } from '../builders/EmbedBuilder.js';
@@ -322,9 +323,10 @@ export class ProjectCommandHandler {
       return;
     }
 
-    // 獲取當前頻道的綁定資訊
-    const channelId = interaction.channelId;
-    const channelBinding = this.projectManager.getChannelBinding(channelId);
+    // Bug 2 Fix: 解析 channel ID（如果是 thread，回溯到 parent channel）
+    // 確保 thread 內使用 /project list 時能看到 parent channel 的綁定
+    const resolvedChannelId = this.resolveParentChannelId(interaction.channel, interaction.channelId);
+    const channelBinding = this.projectManager.getChannelBinding(resolvedChannelId);
 
     const embed = new EmbedBuilder()
       .setColor(Colors.INFO)
@@ -392,24 +394,34 @@ export class ProjectCommandHandler {
       return;
     }
 
-    const channelId = interaction.channelId;
+    // Bug 2 Fix: 解析 thread -> parent channel 後再綁定
+    const resolvedChannelId = this.resolveParentChannelId(interaction.channel, interaction.channelId);
+    const isThreadContext = resolvedChannelId !== interaction.channelId;
 
     // 異步操作需要先 defer
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
-      this.projectManager.bindProjectToChannel(projectId, channelId);
+      this.projectManager.bindProjectToChannel(projectId, resolvedChannelId);
       await this.projectManager.save();
 
       const embed = new EmbedBuilder()
         .setColor(Colors.SUCCESS)
         .setTitle('✅ 專案已綁定')
-        .setDescription(`專案 **${project.name}** 已成功綁定到當前頻道`)
+        .setDescription(`專案 **${project.name}** 已成功綁定`)
         .addFields(
           { name: '📁 路徑', value: `\`${project.path}\``, inline: false },
-          { name: '📍 頻道', value: `<#${channelId}>`, inline: true }
+          { name: '📍 頻道', value: `<#${resolvedChannelId}>`, inline: true }
         )
         .setTimestamp();
+
+      if (isThreadContext) {
+        embed.addFields({
+          name: '💡 說明',
+          value: `此指令在 Thread 中執行，專案已綁定至父頻道 <#${resolvedChannelId}>（Session 綁定以此為準）`,
+          inline: false,
+        });
+      }
 
       await interaction.editReply({
         embeds: [embed],
@@ -535,6 +547,32 @@ export class ProjectCommandHandler {
     const last = parts[parts.length - 1];
 
     return `${first}/.../${last}`;
+  }
+
+  /**
+   * 解析 parent channel ID（如果是 thread，回溯到 parent）
+   * @param channel Discord Channel 物件
+   * @param channelId 頻道 ID
+   * @returns parent channel ID（如果是 thread）或原 channel ID
+   */
+  private resolveParentChannelId(channel: import('discord.js').Channel | null, channelId: string): string {
+    if (!channel) {
+      return channelId;
+    }
+    // 檢查是否為 thread channel
+    if (
+      channel.type === ChannelType.PublicThread ||
+      channel.type === ChannelType.PrivateThread ||
+      channel.type === ChannelType.AnnouncementThread
+    ) {
+      // Thread channel - 回溯到 parent channel
+      const parentId = channel.parentId;
+      if (parentId) {
+        return parentId;
+      }
+    }
+    // 非 thread 或無法解析，直接返回原 ID
+    return channelId;
   }
 }
 

@@ -30,7 +30,7 @@ import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import { createSessionActionRow, createSessionManagementRow } from '../builders/SessionActionRowBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
 import type { ModelDefinition } from '../models/ModelData.js';
-import { getAvailableAgents } from '../services/AgentService.js';
+import { getAvailableAgents, filterPrimaryAgents } from '../services/AgentService.js';
 import type { Session } from '../database/models/Session.js';
 import { MODEL_CONFIG } from '../config/constants.js';
 import { captureCommandError } from '../utils/sentryHelper.js';
@@ -222,6 +222,7 @@ export async function handleSessionModelAutocomplete(
 
 /**
  * 處理 session settings 命令的 agent 選項自動完成
+ * 僅顯示主代理
  */
 export async function handleSessionAgentAutocomplete(
   interaction: AutocompleteInteraction
@@ -230,7 +231,9 @@ export async function handleSessionAgentAutocomplete(
 
   try {
     const agents = await getAvailableAgents({ useCache: true, allowFallback: true });
-    const filtered = agents
+    // 僅過濾主代理
+    const primaryAgents = filterPrimaryAgents(agents);
+    const filtered = primaryAgents
       .filter((agent) =>
         agent.id.toLowerCase().includes(focusedValue)
         || agent.name.toLowerCase().includes(focusedValue)
@@ -309,7 +312,7 @@ async function handleStartCommand(
 
   const prompt = interaction.options.getString('prompt') || '';
   const model = interaction.options.getString('model') || MODEL_CONFIG.DEFAULT;
-  const agent = interaction.options.getString('agent') || undefined;
+  const agentInput = interaction.options.getString('agent');
   const channelId = interaction.channelId;
   const userId = interaction.user.id;
   const guildId = interaction.guildId;
@@ -331,6 +334,22 @@ async function handleStartCommand(
     return;
   }
 
+  // Server-side agent 驗證（若指定了 agent）
+  let validatedAgent: string | undefined;
+  if (agentInput) {
+    const availableAgents = await getAvailableAgents({ projectPath: undefined, useCache: true, allowFallback: true });
+    const primaryAgents = filterPrimaryAgents(availableAgents);
+    const isValidAgent = primaryAgents.some((a) => a.id === agentInput);
+
+    if (!isValidAgent) {
+      await interaction.editReply({
+        content: `❌ 無效的 Agent：\`${agentInput}\`。請選擇有效的主代理（${primaryAgents.map((a) => a.id).join(', ')}）。`,
+      });
+      return;
+    }
+    validatedAgent = agentInput;
+  }
+
   try {
     // 創建新 Session（傳入 guildId）
     const session = await sessionManager.createSession({
@@ -339,7 +358,7 @@ async function handleStartCommand(
       userId,
       prompt,
       model,
-      agent,
+      agent: validatedAgent,
     });
 
     // ===== Phase 1: 創建 Thread 並绑定到 Session =====
@@ -644,6 +663,20 @@ async function handleSettingsCommand(
       content: '⚠️ 請至少提供 `model` 或 `agent` 其中一個設定',
     });
     return;
+  }
+
+  // Server-side agent 驗證（若指定了 agent）
+  if (agent) {
+    const availableAgents = await getAvailableAgents({ projectPath: undefined, useCache: true, allowFallback: true });
+    const primaryAgents = filterPrimaryAgents(availableAgents);
+    const isValidAgent = primaryAgents.some((a) => a.id === agent);
+
+    if (!isValidAgent) {
+      await interaction.editReply({
+        content: `❌ 無效的 Agent：\`${agent}\`。請選擇有效的主代理（${primaryAgents.map((a) => a.id).join(', ')}）。`,
+      });
+      return;
+    }
   }
 
   const targetSessionId = inputSessionId || sessionManager.getActiveSessionByChannel(interaction.channelId)?.sessionId;

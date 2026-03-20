@@ -65,7 +65,7 @@ import { createProjectCommand, ProjectCommandHandler } from '../commands/project
 // Models data
 import { MODELS, getProviderDisplayName } from '../models/ModelData.js';
 import { getModelsByProviderDynamic } from '../services/ModelService.js';
-import { getAvailableAgents } from '../services/AgentService.js';
+import { getAvailableAgents, filterPrimaryAgents } from '../services/AgentService.js';
 import { Colors } from '../builders/EmbedBuilder.js';
 import { SessionStatusEmbedBuilder } from '../builders/SessionEmbedBuilder.js';
 import { createSessionManagementRow } from '../builders/SessionActionRowBuilder.js';
@@ -926,6 +926,18 @@ export class DiscordClient extends Client {
 
           const sessionId = parts.slice(3).join(':');
           const selectedAgent = interaction.values[0];
+
+          // Server-side agent 驗證
+          const availableAgents = await getAvailableAgents({ useCache: true, allowFallback: true });
+          const primaryAgents = filterPrimaryAgents(availableAgents);
+          const isValidAgent = primaryAgents.some((a) => a.id === selectedAgent);
+
+          if (!isValidAgent) {
+            await interaction.editReply({
+              content: `❌ 無效的 Agent：\`${selectedAgent}\`。請選擇有效的主代理（${primaryAgents.map((a) => a.id).join(', ')}）。`,
+            });
+            return;
+          }
 
           const session = await this.sessionManager.findSession(sessionId);
           if (!session) {

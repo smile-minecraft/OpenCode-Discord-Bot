@@ -25,7 +25,7 @@ import {
   createSessionManagementRow,
 } from '../builders/SessionActionRowBuilder.js';
 import { getAvailableModels } from '../services/ModelService.js';
-import { getAvailableAgents } from '../services/AgentService.js';
+import { getAvailableAgents, filterPrimaryAgents } from '../services/AgentService.js';
 import { getSessionEventManager } from '../services/SessionEventManager.js';
 import { getStreamingMessageManager, type SSEEventEmitterAdapter } from '../services/StreamingMessageManager.js';
 import { getOpenCodeSDKAdapter } from '../services/OpenCodeSDKAdapter.js';
@@ -202,7 +202,7 @@ export class SessionButtonHandler {
    * 停止按鈕（帶 Session ID）：中斷當前推理，保留 Session
    */
   async handleStopWithId(interaction: ButtonInteraction): Promise<void> {
-    await this.handlePauseWithId(interaction);
+    await this.handleInterruptWithId(interaction, 'stop');
   }
 
   /**
@@ -352,9 +352,25 @@ export class SessionButtonHandler {
    * 中斷按鈕（停止當前推理，保留 Session）
    */
   async handlePauseWithId(interaction: ButtonInteraction): Promise<void> {
+    await this.handleInterruptWithId(interaction, 'pause');
+  }
+
+  /**
+   * 通用中斷處理（支持 stop 和 pause 兩種 customId 前綴）
+   * @param interaction 按鈕互動
+   * @param actionPrefix 用於提取 Session ID 的前綴 ('stop' 或 'pause')
+   */
+  private async handleInterruptWithId(
+    interaction: ButtonInteraction,
+    actionPrefix: 'stop' | 'pause'
+  ): Promise<void> {
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-    const sessionId = this.extractSessionId(interaction.customId, 'pause');
+    // 嘗試從 'stop' 或 'pause' 前綴提取 Session ID
+    const sessionId =
+      this.extractSessionId(interaction.customId, actionPrefix) ||
+      this.extractSessionId(interaction.customId, actionPrefix === 'stop' ? 'pause' : 'stop');
+
     if (!sessionId) {
       await interaction.editReply({ content: '❌ 無法解析 Session ID' });
       return;
@@ -698,7 +714,7 @@ export class SessionButtonHandler {
   }
 
   /**
-   * 構建 Agent 選項（最多 25 個）
+   * 構建 Agent 選項（最多 25 個，僅主代理）
    */
   private async getAgentOptions(
     projectPath: string,
@@ -710,17 +726,20 @@ export class SessionButtonHandler {
       allowFallback: true,
     });
 
-    if (agents.length === 0) {
+    // 僅顯示主代理
+    const primaryAgents = filterPrimaryAgents(agents);
+
+    if (primaryAgents.length === 0) {
       return [
         new StringSelectMenuOptionBuilder()
-          .setLabel('沒有可用 Agent')
+          .setLabel('沒有可用主代理')
           .setDescription('請檢查 OpenCode Agent 設定')
           .setValue('general')
           .setDefault(currentAgentId === 'general'),
       ];
     }
 
-    return agents.slice(0, 25).map((agent) =>
+    return primaryAgents.slice(0, 25).map((agent) =>
       new StringSelectMenuOptionBuilder()
         .setLabel(agent.name.substring(0, 100))
         .setValue(agent.id)

@@ -21,6 +21,60 @@ export interface RuntimeAgentDefinition {
   source: 'sdk' | 'static';
 }
 
+/** 主代理 ID 清單（固定保留） */
+const PRIMARY_AGENT_IDS = new Set(['arch', 'build', 'review', 'ultra', 'general']);
+
+/**
+ * 檢查是否為主代理
+ * 規則：
+ * 1. 若 agent.mode 存在，優先依 mode 判定（只有 `primary` 為 true）
+ *    - mode='primary' → 是主代理
+ *    - mode='subagent' → 不是主代理
+ *    - mode='all' → 不是主代理
+ * 2. 若 mode 缺失，fallback 到現有機制：
+ *    - id 為 arch/build/review/ultra/general（白名單，大小寫不敏感）
+ *    - description 或 name 含「主代理」關鍵字（精確匹配）
+ * 
+ * 注意：「primary」單獨出現不作數，因為太寬鬆會誤判「primary color」等無關描述
+ */
+export function isPrimaryAgent(agent: RuntimeAgentDefinition): boolean {
+  // 優先：SDK mode 判定（若有 mode 欄位且為 primary，則為主代理）
+  if (agent.mode !== undefined) {
+    return agent.mode.toLowerCase() === 'primary';
+  }
+
+  // Fallback：優先保留 ID 白名單中的主代理（大小寫不敏感）
+  if (PRIMARY_AGENT_IDS.has(agent.id.toLowerCase())) {
+    return true;
+  }
+
+  // Fallback：檢查 description 或 name 是否含「主代理」關鍵字
+  // 採用精確關鍵字匹配，避免「primary」等寬鬆關鍵字造成誤判
+  const descLower = agent.description.toLowerCase();
+  const nameLower = agent.name.toLowerCase();
+  return descLower.includes('主代理') || nameLower.includes('主代理');
+}
+
+/**
+ * 過濾主代理列表
+ * - 若過濾後為空，fallback 至 'general'
+ */
+export function filterPrimaryAgents(agents: RuntimeAgentDefinition[]): RuntimeAgentDefinition[] {
+  const filtered = agents.filter(isPrimaryAgent);
+
+  // Fallback: 若過濾後為空，回傳 'general' 單一代理
+  if (filtered.length === 0) {
+    const generalAgent = agents.find((a) => a.id === 'general');
+    if (generalAgent) {
+      return [generalAgent];
+    }
+    // 完全找不到，回傳空陣列讓調用端處理
+    return [];
+  }
+
+  return filtered;
+}
+
 interface AgentCacheEntry {
   data: RuntimeAgentDefinition[];
   expiresAt: number;

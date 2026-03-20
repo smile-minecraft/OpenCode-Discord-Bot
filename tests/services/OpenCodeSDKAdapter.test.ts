@@ -460,6 +460,215 @@ describe('OpenCodeSDKAdapter', () => {
     });
   });
 
+  describe('getAgents() - 解析 Agent 列表', () => {
+    beforeEach(() => {
+      mockCreateOpencodeClientFn.mockReturnValue({
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn(),
+        },
+      });
+    });
+
+    it('response.data 直接是 Agent 陣列時應該正確解析', async () => {
+      const mockAgents = [
+        {
+          name: 'developer',
+          description: 'A coding agent',
+          mode: 'agent',
+          builtIn: true,
+          model: { providerID: 'openai', modelID: 'gpt-4o' },
+        },
+        {
+          name: 'planner',
+          description: 'Planning agent',
+          mode: 'planning',
+          builtIn: false,
+        },
+      ];
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn().mockResolvedValue({ data: mockAgents }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      const result = await adapter.getAgents();
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        id: 'developer',
+        name: 'developer',
+        description: 'A coding agent',
+        mode: 'agent',
+        builtIn: true,
+        defaultModel: 'openai/gpt-4o',
+      });
+      expect(result[1]).toMatchObject({
+        id: 'planner',
+        name: 'planner',
+        description: 'Planning agent',
+        mode: 'planning',
+        builtIn: false,
+        defaultModel: undefined,
+      });
+    });
+
+    it('response.data.agents 是嵌套陣列時應該正確解析', async () => {
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn().mockResolvedValue({
+            data: {
+              agents: [
+                {
+                  name: 'code-reviewer',
+                  description: 'Reviews code',
+                  model: { providerID: 'anthropic', modelID: 'claude-3-5-sonnet' },
+                },
+              ],
+            },
+          }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      const result = await adapter.getAgents();
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        id: 'code-reviewer',
+        name: 'code-reviewer',
+        description: 'Reviews code',
+        defaultModel: 'anthropic/claude-3-5-sonnet',
+      });
+    });
+
+    it('response.data 非陣列且無 agents 欄位時應該回傳空陣列', async () => {
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn().mockResolvedValue({
+            data: {
+              status: 'ok',
+              count: 0,
+            },
+          }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      const result = await adapter.getAgents();
+
+      expect(result).toEqual([]);
+    });
+
+    it('agent 缺少 name 時應該被過濾掉', async () => {
+      const mockAgents = [
+        { name: 'valid-agent', description: 'Valid' },
+        { description: 'Missing name' },
+        { name: 'another-valid', mode: 'test' },
+        { name: '' },
+        { name: '  ' },
+      ];
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn().mockResolvedValue({ data: mockAgents }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      const result = await adapter.getAgents();
+
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe('valid-agent');
+      expect(result[1].name).toBe('another-valid');
+    });
+
+    it('agent 有 mode 和 builtIn 時應該正確保留', async () => {
+      const mockAgents = [
+        {
+          name: 'arch-agent',
+          description: 'Architecture agent',
+          mode: 'architect',
+          builtIn: true,
+          model: { providerID: 'google', modelID: 'gemini-pro' },
+        },
+        {
+          name: 'custom-agent',
+          description: 'Custom agent',
+          mode: 'custom',
+          builtIn: false,
+        },
+      ];
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn().mockResolvedValue({ data: mockAgents }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      const result = await adapter.getAgents();
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toMatchObject({
+        id: 'arch-agent',
+        name: 'arch-agent',
+        description: 'Architecture agent',
+        mode: 'architect',
+        builtIn: true,
+        defaultModel: 'google/gemini-pro',
+      });
+      expect(result[1]).toMatchObject({
+        id: 'custom-agent',
+        name: 'custom-agent',
+        description: 'Custom agent',
+        mode: 'custom',
+        builtIn: false,
+        defaultModel: undefined,
+      });
+    });
+
+    it('未初始化時應該拋出 NOT_INITIALIZED 錯誤', async () => {
+      const freshAdapter = new OpenCodeSDKAdapter();
+      await expect(freshAdapter.getAgents()).rejects.toMatchObject({
+        code: 'NOT_INITIALIZED',
+      });
+    });
+
+    it('應該支援 directory 參數', async () => {
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn() },
+        app: {
+          agents: vi.fn().mockResolvedValue({ data: [] }),
+        },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      await adapter.getAgents('/custom/directory');
+
+      expect(mockClient.app.agents).toHaveBeenCalledWith({
+        query: { directory: '/custom/directory' },
+      });
+    });
+  });
+
   describe('cleanup() - 清理資源', () => {
     it('本地模式時應該停止服務器', async () => {
       const mockClient = { 

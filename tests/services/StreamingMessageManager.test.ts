@@ -1,6 +1,6 @@
 /**
  * StreamingMessageManager Tests - 去重行為單元測試
- * @description 測試 StreamingMessageManager 的工具呼叫去重邏輯
+ * @description 測試 StreamingMessageManager 的工具呼叫去重邏輯、工具時間線編輯行為、args 格式化
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
@@ -68,7 +68,7 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
     const privateState = manager as any;
     privateState.activeStreams = new Map();
     privateState.toolUpdateQueue = new Map();
-    privateState.toolMessageMap = new Map();
+    privateState.sessionMessageMap = new Map();
     privateState.toolTrackingDedup = new Map();
     privateState.sessionIdToOpenCodeId = new Map();
     privateState.openCodeIdToSessionId = new Map();
@@ -272,14 +272,17 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
     });
   });
 
-  describe('cleanupStream 清理 toolTrackingDedup', () => {
-    it('cleanupStream 應清理該 session 的所有去重映射', () => {
+  describe('cleanupStream 清理 sessionMessageMap', () => {
+    it('cleanupStream 應清理該 session 的 sessionMessageMap 和 toolTrackingDedup', () => {
       const privateState = manager as any;
+
+      // 手動注入 sessionMessageMap
+      privateState.sessionMessageMap.set('session-cleanup', 'msg-cleanup-1');
+      privateState.sessionMessageMap.set('other-session', 'msg-other-1');
 
       // 手動注入去重映射
       privateState.toolTrackingDedup.set('session-cleanup:req-1', 'tool-1');
-      privateState.toolTrackingDedup.set('session-cleanup:req-2', 'tool-2');
-      privateState.toolTrackingDedup.set('other-session:req-3', 'tool-3');
+      privateState.toolTrackingDedup.set('other-session:req-2', 'tool-2');
 
       // Mock ToolStateTracker
       mockClearSessionTools.mockClear();
@@ -287,12 +290,15 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
       const cleanupStream = privateState.cleanupStream.bind(manager);
       cleanupStream('session-cleanup', 'channel-cleanup');
 
+      // session-cleanup 的 sessionMessageMap 應被清理
+      expect(privateState.sessionMessageMap.has('session-cleanup')).toBe(false);
+      // 其他 session 的 sessionMessageMap 應保留
+      expect(privateState.sessionMessageMap.has('other-session')).toBe(true);
+
       // session-cleanup 的去重映射應被清理
       expect(privateState.toolTrackingDedup.has('session-cleanup:req-1')).toBe(false);
-      expect(privateState.toolTrackingDedup.has('session-cleanup:req-2')).toBe(false);
-
       // 其他 session 的去重映射應保留
-      expect(privateState.toolTrackingDedup.has('other-session:req-3')).toBe(true);
+      expect(privateState.toolTrackingDedup.has('other-session:req-2')).toBe(true);
     });
   });
 
@@ -1107,6 +1113,484 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
       expect(mockTrackTool).toHaveBeenCalledTimes(1);
       expect(mockTrackTool).toHaveBeenCalledWith('session-difftool', 'Write', { path: '/output.txt' });
       expect(mockCompleteTool).toHaveBeenCalledWith('session-difftool', 'tool-write-new', { success: true });
+    });
+  });
+
+  describe('工具訊息格式 - 工具時間線（多行 inline code）', () => {
+    it('工具時間線應為多行 inline code 格式，每個工具一行', async () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-timeline:session-timeline-1';
+
+      const mockChannel = {
+        id: 'channel-timeline',
+        send: vi.fn().mockResolvedValue({ id: 'msg-timeline-1', editable: true }),
+        messages: { fetch: vi.fn().mockResolvedValue(null) },
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(mockChannel) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-timeline-1',
+        channelId: 'channel-timeline',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      // 先用 handleToolRequestEvent 建立追蹤並加入佇列
+      const handleToolRequestEvent = (manager as any).handleToolRequestEvent.bind(manager);
+      const queueToolStateUpdate = privateState.queueToolStateUpdate.bind(manager);
+
+      mockTrackTool.mockReturnValueOnce({ id: 'tool-1', toolName: 'Read', status: 'pending', args: { path: '/a.txt' }, startedAt: Date.now() });
+      handleToolRequestEvent({ sessionId: 'session-timeline-1', toolName: 'Read', status: 'pending', args: { path: '/a.txt' } });
+      queueToolStateUpdate('session-timeline-1', 'tool-1');
+
+      mockTrackTool.mockReturnValueOnce({ id: 'tool-2', toolName: 'Bash', status: 'pending', args: { command: 'ls' }, startedAt: Date.now() });
+      handleToolRequestEvent({ sessionId: 'session-timeline-1', toolName: 'Bash', status: 'running', args: { command: 'ls' } });
+      queueToolStateUpdate('session-timeline-1', 'tool-2');
+
+      mockTrackTool.mockReturnValueOnce({ id: 'tool-3', toolName: 'Write', status: 'pending', args: { path: '/b.txt' }, startedAt: Date.now() });
+      handleToolRequestEvent({ sessionId: 'session-timeline-1', toolName: 'Write', status: 'completed', args: { path: '/b.txt' } });
+      queueToolStateUpdate('session-timeline-1', 'tool-3');
+
+      // Mock rateLimiter.enqueue 為同步執行
+      const originalEnqueue = privateState.rateLimiter.enqueue;
+      privateState.rateLimiter.enqueue = vi.fn().mockImplementation(async (fn: () => Promise<any>) => fn());
+
+      // 直接 mock getChannel 返回 mockChannel
+      const originalGetChannel = privateState.getChannel;
+      privateState.getChannel = vi.fn().mockResolvedValue(mockChannel);
+
+      // Mock getSessionTools 返回多個工具（每次 processToolUpdates 呼叫一次）
+      mockGetSessionTools.mockReturnValueOnce([
+        { id: 'tool-1', toolName: 'Read', status: 'pending', args: { path: '/a.txt' }, startedAt: Date.now() },
+        { id: 'tool-2', toolName: 'Bash', status: 'running', args: { command: 'ls' }, startedAt: Date.now() },
+        { id: 'tool-3', toolName: 'Write', status: 'completed', args: { path: '/b.txt' }, startedAt: Date.now() },
+      ]);
+
+      // 直接呼叫 processToolUpdates
+      const processToolUpdates = (manager as any).processToolUpdates.bind(manager);
+      await processToolUpdates();
+
+      // 還原 mocks
+      privateState.rateLimiter.enqueue = originalEnqueue;
+      privateState.getChannel = originalGetChannel;
+
+      // 驗證發送的訊息格式
+      expect(mockChannel.send).toHaveBeenCalled();
+      const sentContent = mockChannel.send.mock.calls[0][0].content;
+
+      // 應該是三行，每行一個工具（帶狀態圖示）
+      expect(sentContent).toContain('⏳ `Read');
+      expect(sentContent).toContain('🔄 `Bash');
+      expect(sentContent).toContain('✅ `Write');
+      // 不應包含 fenced JSON（```）
+      expect(sentContent).not.toContain('```');
+    });
+
+    it('有既有 messageId 時應編輯現有消息而非發送新消息', async () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-edit:session-edit-1';
+
+      const existingMessage = {
+        id: 'msg-existing-1',
+        editable: true,
+        edit: vi.fn().mockResolvedValue({ id: 'msg-existing-1' }),
+      };
+      const mockChannel = {
+        id: 'channel-edit',
+        send: vi.fn().mockResolvedValue({ id: 'msg-new-1', editable: true }),
+        messages: { fetch: vi.fn().mockResolvedValue(existingMessage) },
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(mockChannel) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-edit-1',
+        channelId: 'channel-edit',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      // 預先設置 sessionMessageMap
+      privateState.sessionMessageMap.set('session-edit-1', 'msg-existing-1');
+
+      // 建立追蹤並加入佇列
+      const queueToolStateUpdate = privateState.queueToolStateUpdate.bind(manager);
+      queueToolStateUpdate('session-edit-1', 'tool-edit-1');
+
+      // Mock rateLimiter.enqueue 為同步執行
+      const originalEnqueue = privateState.rateLimiter.enqueue;
+      privateState.rateLimiter.enqueue = vi.fn().mockImplementation(async (fn: () => Promise<any>) => fn());
+
+      // 直接 mock getChannel 返回 mockChannel
+      const originalGetChannel = privateState.getChannel;
+      privateState.getChannel = vi.fn().mockResolvedValue(mockChannel);
+
+      // Mock getSessionTools 返回工具
+      mockGetSessionTools.mockReturnValueOnce([
+        { id: 'tool-edit-1', toolName: 'Read', status: 'pending', args: { path: '/test.txt' }, startedAt: Date.now() },
+      ]);
+
+      // 直接呼叫 processToolUpdates
+      const processToolUpdates = (manager as any).processToolUpdates.bind(manager);
+      await processToolUpdates();
+
+      // 還原 mocks
+      privateState.rateLimiter.enqueue = originalEnqueue;
+      privateState.getChannel = originalGetChannel;
+
+      // 應該編輯現有消息
+      expect(mockChannel.messages.fetch).toHaveBeenCalledWith('msg-existing-1');
+      expect(existingMessage.edit).toHaveBeenCalled();
+      // 不應發送新消息
+      expect(mockChannel.send).not.toHaveBeenCalled();
+    });
+
+    it('無既有 messageId 時應發送新消息並存入 sessionMessageMap', async () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-new:session-new-1';
+
+      const mockChannel = {
+        id: 'channel-new',
+        send: vi.fn().mockResolvedValue({ id: 'msg-new-2', editable: true }),
+        messages: { fetch: vi.fn().mockRejectedValue(new Error('Unknown message')) },
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(mockChannel) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-new-1',
+        channelId: 'channel-new',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      // 建立追蹤並加入佇列
+      const queueToolStateUpdate = privateState.queueToolStateUpdate.bind(manager);
+      queueToolStateUpdate('session-new-1', 'tool-new-1');
+
+      // Mock rateLimiter.enqueue 為同步執行
+      const originalEnqueue = privateState.rateLimiter.enqueue;
+      privateState.rateLimiter.enqueue = vi.fn().mockImplementation(async (fn: () => Promise<any>) => fn());
+
+      // 直接 mock getChannel 返回 mockChannel
+      const originalGetChannel = privateState.getChannel;
+      privateState.getChannel = vi.fn().mockResolvedValue(mockChannel);
+
+      // Mock getSessionTools 返回工具
+      mockGetSessionTools.mockReturnValueOnce([
+        { id: 'tool-new-1', toolName: 'Glob', status: 'running', args: { pattern: '**/*.ts' }, startedAt: Date.now() },
+      ]);
+
+      // 直接呼叫 processToolUpdates
+      const processToolUpdates = (manager as any).processToolUpdates.bind(manager);
+      await processToolUpdates();
+
+      // 還原 mocks
+      privateState.rateLimiter.enqueue = originalEnqueue;
+      privateState.getChannel = originalGetChannel;
+
+      // 應該發送新消息
+      expect(mockChannel.send).toHaveBeenCalled();
+      // sessionMessageMap 應更新
+      expect(privateState.sessionMessageMap.get('session-new-1')).toBe('msg-new-2');
+    });
+  });
+
+  describe('工具 args 格式化 - 支援多種類型', () => {
+    function setupArgsTest(sessionId: string, channelId: string, toolId: string, toolName: string, args: unknown) {
+      const privateState = manager as any;
+      const streamKey = `${channelId}:${sessionId}`;
+
+      const mockChannel = {
+        id: channelId,
+        send: vi.fn().mockResolvedValue({ id: `msg-${toolId}`, editable: true }),
+        messages: { fetch: vi.fn().mockResolvedValue(null) },
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(mockChannel) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId,
+        channelId,
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      const queueToolStateUpdate = privateState.queueToolStateUpdate.bind(manager);
+      queueToolStateUpdate(sessionId, toolId);
+
+      const originalEnqueue = privateState.rateLimiter.enqueue;
+      privateState.rateLimiter.enqueue = vi.fn().mockImplementation(async (fn: () => Promise<any>) => fn());
+
+      const originalGetChannel = privateState.getChannel;
+      privateState.getChannel = vi.fn().mockResolvedValue(mockChannel);
+
+      mockGetSessionTools.mockReturnValueOnce([
+        { id: toolId, toolName, status: 'pending', args, startedAt: Date.now() },
+      ]);
+
+      return { privateState, mockChannel, originalEnqueue, originalGetChannel };
+    }
+
+    async function runProcessToolUpdates(privateState: any) {
+      const processToolUpdates = (manager as any).processToolUpdates.bind(manager);
+      await processToolUpdates();
+    }
+
+    function cleanup(privateState: any, originalEnqueue: any, originalGetChannel: any) {
+      privateState.rateLimiter.enqueue = originalEnqueue;
+      privateState.getChannel = originalGetChannel;
+    }
+
+    it('空 args 應顯示為 ()', async () => {
+      const { privateState, mockChannel, originalEnqueue, originalGetChannel } = setupArgsTest(
+        'session-args-empty', 'channel-args-empty', 'tool-args-empty', 'Bash', {}
+      );
+      await runProcessToolUpdates(privateState);
+      cleanup(privateState, originalEnqueue, originalGetChannel);
+
+      expect(mockChannel.send).toHaveBeenCalled();
+      const sentContent = mockChannel.send.mock.calls[0][0].content;
+      expect(sentContent).toBe('⏳ `Bash({})`');
+    });
+
+    it('string args 應直接顯示為 ("value")，不轉成 {}', async () => {
+      const { privateState, mockChannel, originalEnqueue, originalGetChannel } = setupArgsTest(
+        'session-args-string', 'channel-args-string', 'tool-args-string', 'Read', '/path/to/file.txt'
+      );
+      await runProcessToolUpdates(privateState);
+      cleanup(privateState, originalEnqueue, originalGetChannel);
+
+      expect(mockChannel.send).toHaveBeenCalled();
+      const sentContent = mockChannel.send.mock.calls[0][0].content;
+      expect(sentContent).toBe('⏳ `Read("/path/to/file.txt")`');
+      expect(sentContent).not.toContain('({})');
+    });
+
+    it('array args 應顯示為 ([N items])', async () => {
+      const { privateState, mockChannel, originalEnqueue, originalGetChannel } = setupArgsTest(
+        'session-args-array', 'channel-args-array', 'tool-args-array', 'Glob', ['*.ts', '*.js', '*.json']
+      );
+      await runProcessToolUpdates(privateState);
+      cleanup(privateState, originalEnqueue, originalGetChannel);
+
+      expect(mockChannel.send).toHaveBeenCalled();
+      const sentContent = mockChannel.send.mock.calls[0][0].content;
+      expect(sentContent).toBe('⏳ `Glob([3 items])`');
+    });
+
+    it('null args 應顯示為 ()', async () => {
+      const { privateState, mockChannel, originalEnqueue, originalGetChannel } = setupArgsTest(
+        'session-args-null', 'channel-args-null', 'tool-args-null', 'Bash', null
+      );
+      await runProcessToolUpdates(privateState);
+      cleanup(privateState, originalEnqueue, originalGetChannel);
+
+      expect(mockChannel.send).toHaveBeenCalled();
+      const sentContent = mockChannel.send.mock.calls[0][0].content;
+      expect(sentContent).toBe('⏳ `Bash()`');
+    });
+
+    it('超長 string args 應被截斷', async () => {
+      const longStr = 'a'.repeat(250);
+      const { privateState, mockChannel, originalEnqueue, originalGetChannel } = setupArgsTest(
+        'session-args-long', 'channel-args-long', 'tool-args-long', 'Read', longStr
+      );
+      await runProcessToolUpdates(privateState);
+      cleanup(privateState, originalEnqueue, originalGetChannel);
+
+      expect(mockChannel.send).toHaveBeenCalled();
+      const sentContent = mockChannel.send.mock.calls[0][0].content;
+      // Formatter truncates long string args to 180 chars and adds "..." inside quotes
+      // e.g. ⏳ `Read("aaaa...aaa...")`
+      expect(sentContent).toContain('...")');
+      expect(sentContent.length).toBeLessThanOrEqual(2000);
+    });
+  });
+
+  describe('prompt 去重 - 完全前綴匹配', () => {
+    it('AI 回覆開頭與用戶 prompt 完全相同前綴時應被移除', async () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-prompt:session-prompt-1';
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue({ id: 'msg-prompt-1' }),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(mockChannel),
+        },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-prompt-1',
+        channelId: 'channel-prompt',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+        userPrompt: 'Hello, how are you?',
+      });
+
+      // 模擬 AI 回覆開頭與 prompt 完全相同
+      const handleMessageEvent = (manager as any).handleMessageEvent.bind(manager);
+      handleMessageEvent({
+        sessionId: 'session-prompt-1',
+        content: 'Hello, how are you?\n\nI am doing well, thank you!',
+        isComplete: false,
+      });
+
+      const stream = privateState.activeStreams.get(streamKey);
+      // 去除重複前綴後，開頭應該是回覆內容而非重複的 prompt
+      expect(stream.content).toBe('\n\nI am doing well, thank you!');
+    });
+
+    it('AI 回覆開頭與用戶 prompt 不是完全相同前綴時不應被移除', async () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-prompt:session-prompt-2';
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue({ id: 'msg-prompt-2' }),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(mockChannel),
+        },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-prompt-2',
+        channelId: 'channel-prompt',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+        userPrompt: 'Hello, how are you?',
+      });
+
+      // 模擬 AI 回覆開頭與 prompt 部分相同但非完全前綴
+      const handleMessageEvent = (manager as any).handleMessageEvent.bind(manager);
+      handleMessageEvent({
+        sessionId: 'session-prompt-2',
+        content: 'Hello, how are you doing?\n\nI am doing well!', // "doing?" vs "doing" 不同
+        isComplete: false,
+      });
+
+      const stream = privateState.activeStreams.get(streamKey);
+      // 非完全前綴，不應被移除
+      expect(stream.content).toBe('Hello, how are you doing?\n\nI am doing well!');
+    });
+
+    it('無 userPrompt 時不應進行去重', async () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-prompt:session-prompt-3';
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue({ id: 'msg-prompt-3' }),
+        sendTyping: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockClient = {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(mockChannel),
+        },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-prompt-3',
+        channelId: 'channel-prompt',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+        // 無 userPrompt
+      });
+
+      const handleMessageEvent = (manager as any).handleMessageEvent.bind(manager);
+      handleMessageEvent({
+        sessionId: 'session-prompt-3',
+        content: 'Hello, how are you?\n\nI am doing well!',
+        isComplete: false,
+      });
+
+      const stream = privateState.activeStreams.get(streamKey);
+      // 無 userPrompt，不應被移除
+      expect(stream.content).toBe('Hello, how are you?\n\nI am doing well!');
+    });
+
+    it('setUserPrompt 應正確設置用戶 prompt', () => {
+      const setUserPrompt = (manager as any).setUserPrompt.bind(manager);
+      const privateState = manager as any;
+
+      // 先建立一個 stream
+      privateState.activeStreams.set('channel-1:session-1', {
+        sessionId: 'session-1',
+        channelId: 'channel-1',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: {},
+      });
+
+      // 設置 userPrompt
+      setUserPrompt('session-1', 'channel-1', 'My custom prompt');
+
+      const stream = privateState.activeStreams.get('channel-1:session-1');
+      expect(stream.userPrompt).toBe('My custom prompt');
     });
   });
 });

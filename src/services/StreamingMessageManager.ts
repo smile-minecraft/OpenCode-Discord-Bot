@@ -153,12 +153,17 @@ interface StreamingSession {
   hasSentThinkingNotice: boolean;
   /** Discord Client */
   discordClient: Client;
+  /** 用戶發送的原始 prompt（用於去除 AI 回覆開頭的重複前綴） */
+  userPrompt?: string;
 }
 
 // ============== 常量 ==============
 
 /** Discord 訊息最大長度 */
 const MAX_MESSAGE_LENGTH = 2000;
+
+/** 工具參數截斷長度 */
+const TOOL_ARGS_TRUNCATE_LENGTH = 180;
 
 /** typing indicator 刷新間隔（毫秒）- 少於 10 秒以保持狀態 */
 const TYPING_REFRESH_INTERVAL = 7500;
@@ -382,8 +387,8 @@ export class StreamingMessageManager {
   /** 工具狀態更新佇列 */
   private toolUpdateQueue: Map<string, Set<string>> = new Map();
 
-  /** 工具狀態消息映射 */
-  private toolMessageMap: Map<string, string> = new Map(); // sessionId:toolId -> messageId
+  /** Session 級時間線消息映射: sessionId -> Discord messageId */
+  private sessionMessageMap: Map<string, string> = new Map();
 
   /** 工具狀態定時器 */
   private toolUpdateInterval: NodeJS.Timeout | null = null;
@@ -462,6 +467,7 @@ export class StreamingMessageManager {
       lastEventAt: Date.now(),
       hasSentThinkingNotice: existingStream?.hasSentThinkingNotice ?? false,
       discordClient: this.discordClient,
+      userPrompt: session.prompt || undefined,
     };
     this.activeStreams.set(streamKey, streamSession);
     this.refreshStreamTimeout(streamSession);
@@ -491,6 +497,46 @@ export class StreamingMessageManager {
         logger.warn(`[StreamingMessageManager] Session ${session.sessionId} 缺少 opencodeSessionId`);
       }
     }
+  }
+
+  /**
+   * 設置用戶的原始 prompt（用於去除 AI 回覆開頭的重复前綴）
+   * @param sessionId Session ID
+   * @param channelId Channel ID
+   * @param prompt 用戶發送的原始 prompt
+   */
+  setUserPrompt(sessionId: string, channelId: string, prompt: string): void {
+    const streamKey = this.getStreamKey(channelId, sessionId);
+    const stream = this.activeStreams.get(streamKey);
+    if (stream) {
+      stream.userPrompt = prompt;
+      logger.debug(`[StreamingMessageManager] User prompt set for ${streamKey}: "${prompt.substring(0, 50)}..."`);
+    }
+  }
+
+  /**
+   * 去除 AI 回覆開頭的用戶 prompt 重複前綴
+   * @description 僅在「完全相同前綴」時移除，不做模糊比對
+   * @param content AI 回覆內容
+   * @param userPrompt 用戶原始 prompt
+   * @returns 去除前綴後的內容
+   */
+  private stripPromptPrefix(content: string, userPrompt?: string): string {
+    if (!userPrompt || !content) {
+      return content;
+    }
+
+    // 只在「完全相同前綴」時移除
+    if (content.startsWith(userPrompt)) {
+      const stripped = content.substring(userPrompt.length);
+      // 如果去除前綴後開頭不是換行或空白，補一個換行使內容連貫
+      if (stripped.length > 0 && !stripped.startsWith('\n') && !stripped.startsWith(' ')) {
+        return '\n' + stripped;
+      }
+      return stripped;
+    }
+
+    return content;
   }
 
   /**
@@ -711,7 +757,9 @@ export class StreamingMessageManager {
     }
 
     if (data.content && data.content.trim() !== '') {
-      stream.content = this.mergeIncomingContent(stream.content, data.content);
+      // 在內容合併前，先去除 AI 回覆開頭的用戶 prompt 重複前綴（保守策略：僅完全相同前綴）
+      let processedContent = this.stripPromptPrefix(data.content, stream.userPrompt);
+      stream.content = this.mergeIncomingContent(stream.content, processedContent);
       this.refreshStreamTimeout(stream);
     }
 
@@ -801,6 +849,9 @@ export class StreamingMessageManager {
       return;
     }
 
+    // 保險清理：再次去除 AI 回覆開頭的用戶 prompt 重複前綴（僅完全相同前綴）
+    const finalContent = this.stripPromptPrefix(stream.content, stream.userPrompt);
+
     try {
       const channel = await this.getChannel(stream.channelId, stream.discordClient);
       if (!channel) {
@@ -809,7 +860,7 @@ export class StreamingMessageManager {
       }
 
       // 智能分段
-      const chunks = chunkContent(stream.content);
+      const chunks = chunkContent(finalContent);
 
       if (chunks.length === 1) {
         // 單一訊息
@@ -1048,14 +1099,10 @@ export class StreamingMessageManager {
     // 清空佇列
     this.toolUpdateQueue.clear();
 
-    for (const [sessionId, toolIds] of sessionsToProcess) {
-      const toolIdsArray = Array.from(toolIds);
-
-      // 獲取工具狀態
+    for (const [sessionId, _toolIds] of sessionsToProcess) {
+      // 獲取該 session 所有工具狀態（從 tracker 渲染完整時間線）
       const toolStateTracker = getToolStateTracker();
-      const tools = toolIdsArray
-        .map(toolId => toolStateTracker.getTool(sessionId, toolId))
-        .filter((tool): tool is NonNullable<typeof tool> => tool !== undefined);
+      const tools = toolStateTracker.getSessionTools(sessionId);
 
       if (tools.length === 0) continue;
 
@@ -1082,11 +1129,11 @@ export class StreamingMessageManager {
   }
 
   /**
-   * 發送工具狀態到 Discord（改用文字訊息）
+   * 發送工具狀態到 Discord（單一可編輯時間線）
    * @param stream 串流會話
-   * @param tools 工具執行陣列
+   * @param tools 工具執行陣列（從 tracker 獲取的完整狀態）
    */
-  private async sendToolStateMessage(stream: StreamingSession, tools: Array<{ id: string; toolName: string; status: string; args?: Record<string, unknown>; result?: unknown; error?: string; startedAt: number; updatedAt: number }>): Promise<void> {
+  private async sendToolStateMessage(stream: StreamingSession, tools: Array<{ id: string; toolName: string; status: string; args?: unknown; result?: unknown; error?: string; startedAt: number; updatedAt: number }>): Promise<void> {
     // 使用 Rate Limiter 包裝 Discord API 請求
     await this.rateLimiter.enqueue(async () => {
       try {
@@ -1096,25 +1143,32 @@ export class StreamingMessageManager {
           return;
         }
 
-        // 每個工具調用僅發送一次固定格式訊息
-        for (const tool of tools) {
-          const toolKey = `${stream.sessionId}:${tool.id}`;
-          if (this.toolMessageMap.has(toolKey)) {
-            continue;
+        // 建構多行工具時間線
+        const timelineContent = this.renderToolTimeline(tools);
+
+        // 檢查是否有現有的時間線消息
+        const existingMessageId = this.sessionMessageMap.get(stream.sessionId);
+
+        if (existingMessageId) {
+          // 嘗試編輯現有消息
+          try {
+            const existingMessage = await channel.messages.fetch(existingMessageId);
+            if (existingMessage && existingMessage.editable) {
+              await existingMessage.edit({ content: timelineContent });
+              logger.debug(`[StreamingMessageManager] Tool timeline edited: ${stream.sessionId}, tools: ${tools.length}`);
+              return;
+            }
+          } catch (fetchError) {
+            // 消息不存在或無法獲取，發送新消息
+            logger.debug(`[StreamingMessageManager] Could not edit message ${existingMessageId}, sending new:`, fetchError);
+            this.sessionMessageMap.delete(stream.sessionId);
           }
-
-          const argsJson = this.safeStringify(tool.args ?? {}, 1200);
-          const formatted = [
-            `${tool.toolName}(調用信息)`,
-            '```json',
-            argsJson,
-            '```',
-          ].join('\n');
-
-          const message = await channel.send({ content: formatted.slice(0, MAX_MESSAGE_LENGTH) });
-          this.toolMessageMap.set(toolKey, message.id);
-          logger.debug(`[StreamingMessageManager] Tool invocation sent: ${tool.toolName} (${tool.status})`);
         }
+
+        // 發送新時間線消息
+        const message = await channel.send({ content: timelineContent });
+        this.sessionMessageMap.set(stream.sessionId, message.id);
+        logger.debug(`[StreamingMessageManager] Tool timeline sent: ${stream.sessionId}, tools: ${tools.length}`);
       } catch (error) {
         logger.error('[StreamingMessageManager] 發送工具狀態失敗:', error);
 
@@ -1124,6 +1178,121 @@ export class StreamingMessageManager {
         }
       }
     });
+  }
+
+  /**
+   * 建構工具時間線內容
+   * @param tools 工具執行陣列
+   * @returns 多行時間線字串
+   */
+  private renderToolTimeline(tools: Array<{ id: string; toolName: string; status: string; args?: unknown; result?: unknown; error?: string; startedAt: number; updatedAt: number }>): string {
+    if (tools.length === 0) {
+      return '';
+    }
+
+    // 狀態圖示映射
+    const statusIcons: Record<string, string> = {
+      pending: '⏳',
+      running: '🔄',
+      completed: '✅',
+      error: '❌',
+    };
+
+    const lines = tools.map(tool => {
+      const icon = statusIcons[tool.status] ?? '❓';
+      // args 格式化：支援物件/字串/陣列/其他類型
+      const argsSummary = this.formatToolArgsSummary(tool.args);
+      return `${icon} \`${tool.toolName}${argsSummary}\``;
+    });
+
+    const content = lines.join('\n');
+    // 確保不超過 Discord 訊息上限
+    return content.length > MAX_MESSAGE_LENGTH ? content.slice(0, MAX_MESSAGE_LENGTH - 3) + '...' : content;
+  }
+
+  /**
+   * 格式化工具參數為摘要字串（支援多種輸入類型）
+   * @param args 工具參數（可能是物件/字串/陣列/其他）
+   * @returns 格式化的參數摘要
+   */
+  private formatToolArgsSummary(args?: unknown): string {
+    if (args === undefined || args === null) {
+      return '()';
+    }
+
+    if (typeof args === 'object') {
+      if (Array.isArray(args)) {
+        // 陣列：顯示長度
+        if (args.length === 0) return '([])';
+        return `([${args.length} items])`;
+      }
+      // 一般物件
+      const keys = Object.keys(args as Record<string, unknown>);
+      if (keys.length === 0) return '({})';
+      const serialized = this.serializeArgsForSummary(args as Record<string, unknown>);
+      return `(${serialized})`;
+    }
+
+    // 非物件類型：直接轉字串
+    const str = String(args);
+    if (str.length === 0) return '("")';
+    return `("${str.length > TOOL_ARGS_TRUNCATE_LENGTH ? str.slice(0, TOOL_ARGS_TRUNCATE_LENGTH) + '...' : str}")`;
+  }
+
+  /**
+   * 將物件參數序列化為摘要字串
+   * @param args 工具參數物件
+   * @returns 序列化後的字串
+   */
+  private serializeArgsForSummary(args: Record<string, unknown>): string {
+    const entries = Object.entries(args);
+    if (entries.length === 0) return '{}';
+
+    try {
+      const serialized = entries.map(([key, value]) => {
+        const formatted = this.formatSingleArg(value);
+        return `${key}: ${formatted}`;
+      });
+
+      const result = `{${serialized.join(', ')}}`;
+      // 總長度超過 TOOL_ARGS_TRUNCATE_LENGTH 時截斷
+      if (result.length > TOOL_ARGS_TRUNCATE_LENGTH) {
+        // 嘗試只保留第一個項目並截斷
+        const first = `${entries[0][0]}: ${this.formatSingleArg(entries[0][1])}`;
+        if (first.length + 5 < TOOL_ARGS_TRUNCATE_LENGTH) {
+          return first.slice(0, TOOL_ARGS_TRUNCATE_LENGTH - 3) + '...';
+        }
+        return result.slice(0, TOOL_ARGS_TRUNCATE_LENGTH - 3) + '...';
+      }
+      return result;
+    } catch {
+      return '{...}';
+    }
+  }
+
+  /**
+   * 格式化單一參數值
+   * @param value 參數值
+   * @returns 格式化後的字串
+   */
+  private formatSingleArg(value: unknown): string {
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    if (typeof value === 'string') {
+      if (value.length > 30) return `"${value.slice(0, 30)}..."`;
+      return `"${value}"`;
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return `[${value.length} items]`;
+    }
+    if (typeof value === 'object') {
+      const keys = Object.keys(value as Record<string, unknown>);
+      return `{${keys.length} keys}`;
+    }
+    return '?';
   }
 
   // ============== Session Completion Handling ==============
@@ -1369,12 +1538,8 @@ export class StreamingMessageManager {
       this.toolUpdateQueue.delete(sessionId);
     }
 
-    // 清理 toolMessageMap 中該 session 的所有消息映射
-    for (const key of this.toolMessageMap.keys()) {
-      if (key.startsWith(`${sessionId}:`)) {
-        this.toolMessageMap.delete(key);
-      }
-    }
+    // 清理 sessionMessageMap 中該 session 的消息映射
+    this.sessionMessageMap.delete(sessionId);
 
     // 清理 toolTrackingDedup 中該 session 的所有去重映射
     for (const key of this.toolTrackingDedup.keys()) {
@@ -1398,21 +1563,6 @@ export class StreamingMessageManager {
     for (const stream of streams) {
       this.stopTypingIndicator(stream);
       this.cleanupStream(stream.sessionId, stream.channelId);
-    }
-  }
-
-  /**
-   * 安全 JSON 序列化，避免循環引用造成發送失敗
-   */
-  private safeStringify(value: unknown, maxLength = 1200): string {
-    try {
-      const text = JSON.stringify(value, null, 2) || '{}';
-      if (text.length <= maxLength) {
-        return text;
-      }
-      return `${text.slice(0, maxLength)}\n...`;
-    } catch {
-      return '{"error":"unable to stringify args"}';
     }
   }
 

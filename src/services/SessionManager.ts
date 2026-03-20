@@ -20,7 +20,7 @@ import { getStreamingMessageManager } from './StreamingMessageManager.js';
 import { captureSessionError } from '../utils/sentryHelper.js';
 import { getProjectManager } from './ProjectManager.js';
 import { getThreadManager } from './ThreadManager.js';
-import { Client } from 'discord.js';
+import { Client, ChannelType } from 'discord.js';
 
 // ============== 類型定義 ==============
 
@@ -124,6 +124,41 @@ export interface ClearSessionsResult {
   }
 
   /**
+   * 解析 parent channel ID（如果是 thread，則回溯到 parent）
+   * @description 當 input 是 thread channel 時，返回 parent channel ID；
+   *              否則直接返回原 channel ID
+   * @param channelId 頻道 ID
+   * @returns parent channel ID（如果是 thread）或原 channel ID
+   */
+  resolveParentChannelId(channelId: string): string {
+    // 如果有 Discord Client，嘗試獲取 channel 類型
+    if (this.discordClient) {
+      try {
+        const channel = this.discordClient.channels.cache.get(channelId);
+        if (channel) {
+          // 檢查是否為 thread channel
+          if (
+            channel.type === ChannelType.PublicThread ||
+            channel.type === ChannelType.PrivateThread ||
+            channel.type === ChannelType.AnnouncementThread
+          ) {
+            // Thread channel - 回溯到 parent channel
+            const parentId = channel.parentId;
+            if (parentId) {
+              logger.debug(`[SessionManager] Resolved thread ${channelId} to parent ${parentId}`);
+              return parentId;
+            }
+          }
+        }
+      } catch (error) {
+        logger.debug(`[SessionManager] Could not resolve parent for channel ${channelId}:`, error);
+      }
+    }
+    // 非 thread 或無法解析，直接返回原 ID
+    return channelId;
+  }
+
+  /**
    * 獲取伺服器端口
    * @returns 伺服器端口號
    */
@@ -138,16 +173,20 @@ export interface ClearSessionsResult {
     const sessionId = this.generateSessionId();
     const resolvedAgent = options.agent?.trim() || await this.getDefaultAgentForGuild(options.guildId);
 
+    // 解析 channel ID（如果是 thread，回溯到 parent channel）
+    // 用於 project binding lookup 和 session 儲存
+    const resolvedChannelId = this.resolveParentChannelId(options.channelId);
+
     // 創建 Session 實例
     const session = new Session({
       sessionId,
-      channelId: options.channelId,
+      channelId: resolvedChannelId,
       userId: options.userId,
       status: 'pending',
       prompt: options.prompt,
       model: options.model || this.defaultModel,
       agent: resolvedAgent,
-      projectPath: options.projectPath || this.getDefaultProjectPath(options.channelId),
+      projectPath: options.projectPath || this.getDefaultProjectPath(resolvedChannelId),
     });
 
     // 標記為啟動中
@@ -199,10 +238,10 @@ export interface ClearSessionsResult {
       // 5. 只有在 SDK 創建成功後才註冊到活動列表 (避免 Race Condition)
       this.activeSessions.set(sessionId, session);
 
-      // 6. 更新頻道索引
-      const channelSessionSet = this.channelSessions.get(options.channelId) || new Set();
+      // 6. 更新頻道索引（使用 resolved channel ID）
+      const channelSessionSet = this.channelSessions.get(resolvedChannelId) || new Set();
       channelSessionSet.add(sessionId);
-      this.channelSessions.set(options.channelId, channelSessionSet);
+      this.channelSessions.set(resolvedChannelId, channelSessionSet);
 
       // Session 事件在真正發送 prompt 前才延遲訂閱，避免空 Session 產生多餘訂閱。
 
@@ -652,16 +691,18 @@ export interface ClearSessionsResult {
 
   /**
    * 列出 Sessions
+   * @description 自動 normalize thread -> parent channel
    */
   async listSessions(
     channelId: string,
     status: 'all' | 'running' | 'completed' | 'aborted' | 'failed' = 'all'
   ): Promise<Session[]> {
+    const resolvedChannelId = this.resolveParentChannelId(channelId);
     const sessions: Session[] = [];
 
     // 從活動列表過濾
     for (const [, session] of this.activeSessions) {
-      if (session.channelId !== channelId) {
+      if (session.channelId !== resolvedChannelId) {
         continue;
       }
 
@@ -684,9 +725,11 @@ export interface ClearSessionsResult {
 
   /**
    * 通過頻道 ID 獲取所有關聯的 Session（使用索引優化）
+   * @description 自動 normalize thread -> parent channel
    */
   getSessionsByChannel(channelId: string): Session[] {
-    const sessionIds = this.channelSessions.get(channelId);
+    const resolvedChannelId = this.resolveParentChannelId(channelId);
+    const sessionIds = this.channelSessions.get(resolvedChannelId);
     if (!sessionIds) {
       return [];
     }
@@ -705,6 +748,7 @@ export interface ClearSessionsResult {
 
   /**
    * 查詢 Session（優先記憶體，找不到則嘗試資料庫）
+   * @description 從 DB 載入的非結束 session 會重新註冊到 activeSessions 和 channelSessions
    * @param sessionId Session ID
    */
   async findSession(sessionId: string): Promise<Session | null> {
@@ -712,15 +756,39 @@ export interface ClearSessionsResult {
     if (active) {
       return active;
     }
-    return this.loadSession(sessionId);
+
+    const loaded = await this.loadSession(sessionId);
+    if (!loaded) {
+      return null;
+    }
+
+    // 如果 session 未結束，重新註冊到記憶體索引
+    if (!loaded.isEnded()) {
+      this.activeSessions.set(sessionId, loaded);
+
+      // 重建 channelSessions 索引（避免重複成員）
+      const channelId = loaded.channelId;
+      const existingSet = this.channelSessions.get(channelId);
+      if (!existingSet) {
+        this.channelSessions.set(channelId, new Set([sessionId]));
+      } else if (!existingSet.has(sessionId)) {
+        existingSet.add(sessionId);
+      }
+
+      logger.debug(`[SessionManager] findSession re-registered non-ended session ${sessionId} into activeSessions and channelSessions`);
+    }
+
+    return loaded;
   }
 
   /**
    * 獲取頻道的活躍 Session
+   * @description 自動 normalize thread -> parent channel，避免 thread 內查詢失敗
    */
   getActiveSessionByChannel(channelId: string): Session | undefined {
+    const resolvedChannelId = this.resolveParentChannelId(channelId);
     for (const [, session] of this.activeSessions) {
-      if (session.channelId === channelId && session.isRunning()) {
+      if (session.channelId === resolvedChannelId && session.isRunning()) {
         return session;
       }
     }
@@ -942,17 +1010,21 @@ export interface ClearSessionsResult {
 
   /**
    * 獲取預設專案路徑
+   * @description 內部 normalize channelId 後再查詢 binding，避免 thread 綁定失效
    */
   private getDefaultProjectPath(channelId: string): string {
+    // 內部 normalize（thread -> parent）後再查詢 binding
+    const resolvedChannelId = this.resolveParentChannelId(channelId);
+
     // 優先檢查是否有綁定的專案
     try {
       const projectManager = getProjectManager();
-      const channelBinding = projectManager.getChannelBinding(channelId);
+      const channelBinding = projectManager.getChannelBinding(resolvedChannelId);
       
       if (channelBinding) {
         const project = projectManager.getProject(channelBinding.projectId);
         if (project) {
-          logger.debug(`[SessionManager] Using bound project path: ${project.path} for channel: ${channelId}`);
+          logger.debug(`[SessionManager] Using bound project path: ${project.path} for channel: ${channelId} (resolved: ${resolvedChannelId})`);
           return project.path;
         }
       }
@@ -964,7 +1036,7 @@ export interface ClearSessionsResult {
     // Fallback: 使用可配置的專案根目錄
     // 優先順序：環境變數 PROJECTS_ROOT > 使用者 home 目錄下的 opencode-projects
     const projectsRoot = process.env.PROJECTS_ROOT || path.join(os.homedir(), 'opencode-projects');
-    return path.join(projectsRoot, channelId);
+    return path.join(projectsRoot, resolvedChannelId);
   }
 
   /**
@@ -1121,6 +1193,9 @@ export interface ClearSessionsResult {
       const sessions = this.sqliteDb.loadActiveSessions();
       logger.info(`[SessionManager] 發現 ${sessions.length} 個活躍 Session 需要恢復`);
 
+      // 清空並重建 channelSessions 索引
+      this.channelSessions.clear();
+
       for (const session of sessions) {
         // 檢查 Session 是否過期（例如超過 24 小時）
         const lastActive = session.lastActiveAt ? new Date(session.lastActiveAt).getTime() : 0;
@@ -1136,8 +1211,15 @@ export interface ClearSessionsResult {
 
         // 重新註冊到活躍列表
         this.activeSessions.set(session.sessionId, session);
-        
-        logger.info(`[SessionManager] Session ${session.sessionId} 已恢復`);
+
+        // 重建 channelSessions 索引（使用 session.channelId）
+        // 注意：session.channelId 已經是 resolved parent channel ID
+        const channelId = session.channelId;
+        const channelSessionSet = this.channelSessions.get(channelId) || new Set();
+        channelSessionSet.add(session.sessionId);
+        this.channelSessions.set(channelId, channelSessionSet);
+
+        logger.info(`[SessionManager] Session ${session.sessionId} 已恢復（頻道: ${channelId}）`);
       }
 
       // 恢復完成後，恢復 thread mappings
@@ -1145,6 +1227,8 @@ export interface ClearSessionsResult {
       if (threadManager.isReady()) {
         threadManager.restoreMappings();
       }
+
+      logger.info(`[SessionManager] channelSessions 索引已重建，共 ${this.channelSessions.size} 個頻道`);
     } catch (error) {
       logger.error('[SessionManager] 恢復 Session 失敗:', error);
 
