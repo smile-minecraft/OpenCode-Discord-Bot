@@ -99,6 +99,7 @@ describe('OpenCodeSDKAdapter', () => {
       },
       event: { subscribe: vi.fn() },
       session: { create: vi.fn() },
+      _client: { request: vi.fn().mockResolvedValue(undefined) },
     });
     
     // Clear environment variable BEFORE creating adapter
@@ -862,6 +863,101 @@ describe('OpenCodeSDKAdapter', () => {
         sessionId: 'session-123', 
         requestId: 'req-456', 
         approved: true 
+      })).rejects.toMatchObject({
+        code: 'NOT_INITIALIZED',
+      });
+    });
+  });
+
+  describe('sendQuestionAnswer() - 發送問題答案', () => {
+    it('應該使用 SDK 內部傳輸發送巢狀答案並避免全域 fetch', async () => {
+      const mockRequest = vi.fn().mockResolvedValue({ data: {} });
+      const mockClient = {
+        global: { event: vi.fn() },
+        event: { subscribe: vi.fn() },
+        session: {
+          create: vi.fn(),
+          prompt: vi.fn(),
+        },
+        postSessionIdPermissionsPermissionId: vi.fn(),
+        auth: { set: vi.fn() },
+        _client: { request: mockRequest },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+
+      await adapter.sendQuestionAnswer({
+        sessionId: 'session-123',
+        questionId: 'question-abc',
+        answers: ['  first  ', 'second'],
+      });
+
+      expect(mockRequest).toHaveBeenCalledWith(expect.objectContaining({
+        method: 'POST',
+        url: '/question/question-abc/reply',
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          answers: [['first', 'second']],
+        },
+      }));
+      expect(mockFetchFn).not.toHaveBeenCalled();
+    });
+
+    it('SDK 錯誤應映射為 SDKAdapterError', async () => {
+      const mockRequest = vi.fn().mockRejectedValue(new Error('429 Rate Limit'));
+      const mockClient = {
+        global: { event: vi.fn() },
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn(), prompt: vi.fn() },
+        postSessionIdPermissionsPermissionId: vi.fn(),
+        auth: { set: vi.fn() },
+        _client: { request: mockRequest },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+
+      await expect(adapter.sendQuestionAnswer({
+        sessionId: 'session-123',
+        questionId: 'question-abc',
+        answers: ['choice'],
+      })).rejects.toMatchObject({
+        code: 'RATE_LIMIT',
+      });
+      expect(mockFetchFn).not.toHaveBeenCalled();
+    });
+
+    it('空答案應立即拒絕且不呼叫 SDK 傳輸', async () => {
+      const mockRequest = vi.fn();
+      const mockClient = {
+        global: { event: vi.fn() },
+        event: { subscribe: vi.fn() },
+        session: { create: vi.fn(), prompt: vi.fn() },
+        postSessionIdPermissionsPermissionId: vi.fn(),
+        auth: { set: vi.fn() },
+        _client: { request: mockRequest },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+
+      await expect(adapter.sendQuestionAnswer({
+        sessionId: 'session-123',
+        questionId: 'question-abc',
+        answers: ['   ', ''],
+      })).rejects.toMatchObject({
+        code: 'SDK_ERROR',
+      });
+      expect(mockRequest).not.toHaveBeenCalled();
+    });
+
+    it('未初始化時應拋出 NOT_INITIALIZED', async () => {
+      const freshAdapter = new OpenCodeSDKAdapter();
+      await expect(freshAdapter.sendQuestionAnswer({
+        sessionId: 'session-123',
+        questionId: 'question-abc',
+        answers: ['choice'],
       })).rejects.toMatchObject({
         code: 'NOT_INITIALIZED',
       });

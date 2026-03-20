@@ -39,6 +39,7 @@ export type SDKEventType =
   | 'file.watcher.deleted'
   // Question events
   | 'question.asked'
+  | 'permission.asked'
   // Error events
   | 'error'
   // Server events
@@ -52,6 +53,7 @@ export interface SDKEventProperties {
   /** Session ID */
   session_id?: string;
   sessionId?: string;
+  sessionID?: string;
   /** 訊息 ID */
   message_id?: string;
   messageId?: string;
@@ -89,6 +91,8 @@ export interface SDKEventProperties {
   text?: string;
   /** 問題選項（部分事件格式會放在頂層） */
   options?: Array<{ label?: string; value?: string; description?: string } | string>;
+  /** 問題陣列（某些 SDK 事件使用） */
+  questions?: unknown[];
   /** 是否可複選（部分事件格式會放在頂層） */
   multiple?: boolean;
   /** 其他屬性 */
@@ -244,6 +248,7 @@ const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
   
   // Question events
   'question.asked': 'question',
+  'permission.asked': 'question',
   
   // Error events
   'error': 'error',
@@ -764,18 +769,28 @@ export class SSEEventEmitterAdapter
    * 解析 question 事件（兼容多種 SDK payload）
    */
   private parseQuestionEvent(props: SDKEventProperties): QuestionEventData | null {
-    const questionObject = props.question && typeof props.question === 'object'
-      ? props.question
+    const questionFromNested = props.question && typeof props.question === 'object'
+      ? (props.question as Record<string, unknown>)
       : null;
 
-    const questionId = questionObject?.id
+    const questionFromList = Array.isArray(props.questions)
+      ? props.questions.find((item) => item && typeof item === 'object') as Record<string, unknown> | undefined
+      : undefined;
+
+    const questionObject = questionFromNested || questionFromList || null;
+
+    const questionId = (typeof questionObject?.id === 'string' ? questionObject.id : '')
       || (typeof props.question_id === 'string' ? props.question_id : '')
       || (typeof props.questionId === 'string' ? props.questionId : '')
       || (typeof props.request_id === 'string' ? props.request_id : '')
       || (typeof props.requestId === 'string' ? props.requestId : '')
       || (typeof props.id === 'string' ? props.id : '');
 
-    const text = questionObject?.text
+    const text = (typeof questionObject?.text === 'string' ? questionObject.text : '')
+      || (typeof questionObject?.question === 'string' ? questionObject.question : '')
+      || (typeof questionObject?.prompt === 'string' ? questionObject.prompt : '')
+      || (typeof questionObject?.title === 'string' ? questionObject.title : '')
+      || (typeof questionObject?.message === 'string' ? questionObject.message : '')
       || (typeof props.text === 'string' ? props.text : '')
       || (typeof props.prompt === 'string' ? props.prompt : '')
       || (typeof props.title === 'string' ? props.title : '');
@@ -784,13 +799,18 @@ export class SSEEventEmitterAdapter
       return null;
     }
 
-    const rawOptions = questionObject?.options ?? props.options;
+    const rawOptions = questionObject?.options
+      ?? questionObject?.choices
+      ?? questionObject?.items
+      ?? props.options;
     const options = this.normalizeQuestionOptions(rawOptions);
 
-    const sessionId = questionObject?.session_id
-      || questionObject?.sessionId
+    const sessionId = (typeof questionObject?.session_id === 'string' ? questionObject.session_id : '')
+      || (typeof questionObject?.sessionId === 'string' ? questionObject.sessionId : '')
+      || (typeof questionObject?.sessionID === 'string' ? questionObject.sessionID : '')
       || props.session_id
       || props.sessionId
+      || props.sessionID
       || this.currentSessionId
       || '';
 
@@ -799,7 +819,7 @@ export class SSEEventEmitterAdapter
       questionId,
       text,
       options,
-      multiple: questionObject?.multiple || props.multiple || false,
+      multiple: Boolean(questionObject?.multiple || props.multiple || false),
     };
   }
 
@@ -830,13 +850,19 @@ export class SSEEventEmitterAdapter
           ? candidate.label
           : typeof candidate.text === 'string' && candidate.text.trim() !== ''
             ? candidate.text
-            : typeof candidate.value === 'string'
-              ? candidate.value
-              : '';
+            : typeof candidate.title === 'string' && candidate.title.trim() !== ''
+              ? candidate.title
+              : typeof candidate.name === 'string' && candidate.name.trim() !== ''
+                ? candidate.name
+              : typeof candidate.value === 'string'
+                ? candidate.value
+                : '';
         if (!label) return null;
 
         const value = typeof candidate.value === 'string' && candidate.value.trim() !== ''
           ? candidate.value
+          : typeof candidate.id === 'string' && candidate.id.trim() !== ''
+            ? candidate.id
           : label;
 
         const description = typeof candidate.description === 'string' && candidate.description.trim() !== ''

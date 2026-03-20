@@ -36,6 +36,15 @@ export class SDKAdapterError extends Error {
   }
 }
 
+interface SDKRequestTransport {
+  request(options: {
+    method: string;
+    url: string;
+    headers?: Record<string, string>;
+    body?: unknown;
+  }): Promise<unknown>;
+}
+
 /**
  * Session 創建參數
  */
@@ -591,33 +600,42 @@ export class OpenCodeSDKAdapter {
    * @throws {SDKAdapterError} 發送失敗
    */
   public async sendQuestionAnswer(params: { sessionId: string; questionId: string; answers: string[] }): Promise<void> {
-    const baseUrl = this.getBaseUrl();
-    if (!baseUrl) {
-      throw new SDKAdapterError('伺服器未運行', 'SERVER_NOT_RUNNING');
+    const client = this.getClient();
+    const sanitizedAnswers = params.answers
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .filter((value): value is string => value.length > 0);
+
+    if (sanitizedAnswers.length === 0) {
+      throw new SDKAdapterError('請至少提供一個有效答案', 'SDK_ERROR');
     }
 
+    const transport = this.getTransport(client);
+
     try {
-      // 根據 SDK v2 的結構，API 路徑應該是 /question/{requestID}/reply
-      // 這裡我們直接使用 fetch 調用 REST API
-      const response = await fetch(`${baseUrl}/question/${params.questionId}/reply`, {
+      await transport.request({
         method: 'POST',
+        url: `/question/${encodeURIComponent(params.questionId)}/reply`,
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          answers: params.answers.map(value => ({ label: value, value }))
-        }),
+        body: {
+          answers: [sanitizedAnswers],
+        },
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
 
       logger.info(`[OpenCodeSDKAdapter] 答案已發送到問題 ${params.questionId}`);
     } catch (error) {
       logger.error('[OpenCodeSDKAdapter] 發送問題答案失敗:', error);
       throw this.mapSDKError(error, '發送問題答案失敗');
     }
+  }
+
+  private getTransport(client: OpencodeClient): SDKRequestTransport {
+    const coreTransport = (client as unknown as { _client?: SDKRequestTransport })._client;
+    if (!coreTransport || typeof coreTransport.request !== 'function') {
+      throw new SDKAdapterError('無法取得 SDK 傳輸通道', 'SDK_ERROR');
+    }
+    return coreTransport;
   }
 
   /**
