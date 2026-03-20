@@ -20,6 +20,7 @@ import { getStreamingMessageManager } from './StreamingMessageManager.js';
 import { captureSessionError } from '../utils/sentryHelper.js';
 import { getProjectManager } from './ProjectManager.js';
 import { getThreadManager } from './ThreadManager.js';
+import { Client } from 'discord.js';
 
 // ============== 類型定義 ==============
 
@@ -59,6 +60,7 @@ export interface ClearSessionsResult {
   totalSessions: number;
   deletedSessions: number;
   deletedThreads: number;
+  deletedStatusMessages: number;
   failed: number;
 }
 
@@ -73,10 +75,12 @@ export interface ClearSessionsResult {
     private activeSessions: Map<string, Session> = new Map();
     /** 頻道 ID 到 Session ID 集合的映射（用於快速查詢） */
     private channelSessions: Map<string, Set<string>> = new Map();
-    /** SQLite 資料庫實例 */
-    private sqliteDb: SQLiteDatabase;
-    /** 清理定時器 */
-    private cleanupInterval: NodeJS.Timeout | null = null;
+  /** SQLite 資料庫實例 */
+  private sqliteDb: SQLiteDatabase;
+  /** Discord Client 實例（用於刪除主頻道狀態卡） */
+  private discordClient: Client | null = null;
+  /** 清理定時器 */
+  private cleanupInterval: NodeJS.Timeout | null = null;
     
   /** SDK Adapter */
   private sdkAdapter: OpenCodeSDKAdapter;
@@ -110,6 +114,14 @@ export interface ClearSessionsResult {
       this.cleanupInterval.unref();
       logger.debug('[SessionManager] Session 清理定時器已啟動 (5 分鐘間隔)');
     }
+
+  /**
+   * 設定 Discord Client（用於刪除主頻道狀態卡等操作）
+   * @param client Discord Client 實例
+   */
+  setDiscordClient(client: Client): void {
+    this.discordClient = client;
+  }
 
   /**
    * 獲取伺服器端口
@@ -501,6 +513,14 @@ export interface ClearSessionsResult {
       }
     }
 
+    // 刪除主頻道狀態卡（所有錯誤 swallow，不中斷流程）
+    try {
+      await this.deleteMainStatusMessage(session);
+    } catch (statusError) {
+      // 錯誤已由 deleteMainStatusMessage 內部 swallow，這裡只處理異常情況
+      logger.warn(`[SessionManager] Main status message deletion threw unexpected error for session ${sessionId}:`, statusError);
+    }
+
     return session;
   }
 
@@ -535,6 +555,7 @@ export interface ClearSessionsResult {
     }
 
     let deletedSessions = 0;
+    let deletedStatusMessages = 0;
     let failed = 0;
 
     for (const sessionId of targets.keys()) {
@@ -544,6 +565,11 @@ export interface ClearSessionsResult {
         });
         if (deleted) {
           deletedSessions++;
+          // 統計有 statusMessageId 的 session（代表有主頻道狀態卡需清理）
+          const statusMessageId = (deleted.metadata as Record<string, unknown>)?.statusMessageId as string | undefined;
+          if (statusMessageId) {
+            deletedStatusMessages++;
+          }
         }
       } catch (error) {
         failed++;
@@ -577,6 +603,7 @@ export interface ClearSessionsResult {
       totalSessions: targets.size,
       deletedSessions,
       deletedThreads,
+      deletedStatusMessages,
       failed,
     };
   }
@@ -850,6 +877,67 @@ export interface ClearSessionsResult {
    */
   private generateSessionId(): string {
     return `sess_${uuidv4().slice(0, 8)}`;
+  }
+
+  /**
+   * 刪除 Session 的主頻道狀態卡訊息
+   * @description 從 session.metadata.statusMessageId 取得訊息 ID 並刪除
+   *             所有錯誤都會被 swallow 並 warn，不中斷流程
+   * @param session Session 實例
+   * @returns true 如果有 statusMessageId 並嘗試刪除，false 否
+   */
+  private async deleteMainStatusMessage(session: Session): Promise<boolean> {
+    const statusMessageId = (session.metadata as Record<string, unknown>)?.statusMessageId as string | undefined;
+    const statusChannelId = (session.metadata as Record<string, unknown>)?.statusChannelId as string | undefined;
+
+    if (!statusMessageId || !statusChannelId) {
+      return false;
+    }
+
+    if (!this.discordClient) {
+      logger.warn('[SessionManager] Discord client not set, cannot delete main status message', {
+        sessionId: session.sessionId,
+        statusMessageId,
+      });
+      return true; // 有 ID 但無法刪除，仍算「嘗試過」
+    }
+
+    try {
+      const channel = await this.discordClient.channels.fetch(statusChannelId);
+      if (!channel || !('messages' in channel)) {
+        logger.warn('[SessionManager] Status channel not found or not text-based', {
+          sessionId: session.sessionId,
+          statusChannelId,
+        });
+        return true;
+      }
+
+      const message = await channel.messages.fetch(statusMessageId);
+      if (!message) {
+        logger.debug('[SessionManager] Status message already deleted', {
+          sessionId: session.sessionId,
+          statusMessageId,
+        });
+        return true;
+      }
+
+      await message.delete();
+      logger.info('[SessionManager] Deleted main status message', {
+        sessionId: session.sessionId,
+        statusMessageId,
+        statusChannelId,
+      });
+      return true;
+    } catch (error) {
+      // 所有錯誤都 swallow + warn，不中斷流程
+      logger.warn('[SessionManager] Failed to delete main status message (ignored)', {
+        sessionId: session.sessionId,
+        statusMessageId,
+        statusChannelId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true; // 嘗試了但失敗，仍算「嘗試過」
+    }
   }
 
   /**

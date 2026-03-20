@@ -434,3 +434,139 @@ describe('registerSessionButtonHandlers() - 註冊函數', () => {
     });
   });
 });
+
+describe('SessionButtonHandler - 刪除流程不再更新主狀態卡', () => {
+  /**
+   * 測試場景：刪除按鈕成功後不再呼叫 updateMainStatusMessage
+   * 預期結果：handleDeleteWithId 只回覆 ephemeral 成功訊息，不更新主狀態卡
+   */
+  it('handleDeleteWithId 刪除成功後不回覆編輯主狀態卡', async () => {
+    const mockSession = {
+      sessionId: 'test-session-123',
+      channelId: 'test-channel',
+      userId: 'test-user',
+      prompt: 'Test prompt',
+      model: 'test-model',
+      status: 'active' as const,
+      projectPath: '/test/path',
+      metadata: {
+        statusMessageId: 'msg_main_status_123',
+        statusChannelId: 'test-channel',
+      },
+    };
+
+    const mockSessionManager = {
+      findSession: vi.fn().mockResolvedValue(mockSession),
+      terminateAndDeleteSession: vi.fn().mockResolvedValue(mockSession),
+    };
+
+    const mockInteraction: any = {
+      customId: 'session:delete:test-session-123',
+      channelId: 'test-channel',
+      user: { id: 'test-user' },
+      guildId: 'test-guild',
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn().mockImplementation(async function(this: any) {
+        this.deferred = true;
+        return undefined;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            messages: {
+              fetch: vi.fn().mockResolvedValue({
+                id: 'msg_main_status_123',
+                edit: vi.fn().mockResolvedValue({}),
+              }),
+            },
+          }),
+        },
+      },
+    };
+
+    // Mock guild members fetch for permission check
+    mockInteraction.guild = {
+      members: {
+        fetch: vi.fn().mockResolvedValue({
+          permissions: {
+            has: vi.fn().mockReturnValue(false),
+          },
+        }),
+      },
+    };
+
+    const h = new SessionButtonHandler(mockSessionManager as any);
+
+    await h.handleDeleteWithId(mockInteraction as any);
+
+    // 驗證成功回覆
+    expect(mockInteraction.editReply).toHaveBeenCalled();
+    const editCall = (mockInteraction.editReply as any).mock.calls[0][0];
+    expect(editCall.content).toContain('✅');
+    expect(editCall.content).toContain('已刪除');
+
+    // 驗證不再呼叫 updateMainStatusMessage（表現為 client.channels.fetch 不應被呼叫）
+    // 因為刪除成功後不更新主狀態卡
+    expect(mockInteraction.client.channels.fetch).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 測試場景：刪除按鈕失敗時也保持不更新主狀態卡
+   * 預期結果：即使刪除失敗，也不會嘗試更新主狀態卡
+   */
+  it('handleDeleteWithId 刪除失敗後也不更新主狀態卡', async () => {
+    const mockSessionManager = {
+      findSession: vi.fn().mockResolvedValue(null),
+    };
+
+    const mockInteraction: any = {
+      customId: 'session:delete:nonexistent-session',
+      channelId: 'test-channel',
+      user: { id: 'test-user' },
+      guildId: 'test-guild',
+      deferred: false,
+      deferReply: vi.fn().mockImplementation(async function(this: any) {
+        this.deferred = true;
+        return undefined;
+      }),
+      editReply: vi.fn().mockResolvedValue(undefined),
+      reply: vi.fn().mockResolvedValue(undefined),
+      client: {
+        channels: {
+          fetch: vi.fn().mockResolvedValue({
+            messages: {
+              fetch: vi.fn().mockResolvedValue({
+                edit: vi.fn().mockResolvedValue({}),
+              }),
+            },
+          }),
+        },
+      },
+    };
+
+    mockInteraction.guild = {
+      members: {
+        fetch: vi.fn().mockResolvedValue({
+          permissions: {
+            has: vi.fn().mockReturnValue(false),
+          },
+        }),
+      },
+    };
+
+    const h = new SessionButtonHandler(mockSessionManager as any);
+
+    await h.handleDeleteWithId(mockInteraction as any);
+
+    // 驗證錯誤回覆
+    expect(mockInteraction.editReply).toHaveBeenCalled();
+    const editCall = (mockInteraction.editReply as any).mock.calls[0][0];
+    expect(editCall.content).toContain('❌');
+
+    // 驗證沒有嘗試更新主狀態卡
+    expect(mockInteraction.client.channels.fetch).not.toHaveBeenCalled();
+  });
+});

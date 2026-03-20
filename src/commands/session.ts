@@ -710,6 +710,7 @@ async function handleClearCommand(
         `已處理 Session：${result.totalSessions}`,
         `已刪除 Session：${result.deletedSessions}`,
         `已刪除討論串：${result.deletedThreads}`,
+        `已刪除狀態卡：${result.deletedStatusMessages}`,
         `失敗數：${result.failed}`,
       ].join('\n'),
     });

@@ -355,6 +355,16 @@ export class DiscordClient extends Client {
       logger.error('[Client] 設置 ThreadManager Discord Client 失敗', error as Error);
     }
 
+    // 設置 SessionManager 的 Discord Client（確保刪除主頻道狀態卡時可實際呼叫 Discord API）
+    try {
+      const { getSessionManager } = await import('../services/SessionManager.js');
+      const sessionManager = getSessionManager();
+      sessionManager.setDiscordClient(this);
+      logger.info('[Client] SessionManager Discord Client 已設置');
+    } catch (error) {
+      logger.error('[Client] 設置 SessionManager Discord Client 失敗', error as Error);
+    }
+
     // 註冊所有 handlers
     this.registerHandlers();
 

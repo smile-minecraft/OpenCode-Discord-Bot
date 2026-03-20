@@ -28,6 +28,18 @@ vi.mock('../../src/services/deprecated/OpenCodeClient.js', () => ({
   })),
 }));
 
+// Mock ThreadManager
+vi.mock('../../src/services/ThreadManager.js', () => ({
+  getThreadManager: vi.fn(() => ({
+    isReady: vi.fn().mockReturnValue(true),
+    deleteDiscordThread: vi.fn().mockResolvedValue(undefined),
+    deleteThread: vi.fn(),
+    cleanupSession: vi.fn(),
+    deleteSessionThread: vi.fn().mockResolvedValue(undefined),
+    clearAllSessionThreads: vi.fn().mockResolvedValue({ deleted: 0, failed: 0 }),
+  })),
+}));
+
 describe('SessionManager', () => {
   let sessionManager: SessionManager;
 
@@ -148,6 +160,196 @@ describe('SessionManager', () => {
       expect(result?.status).toBe('aborted');
       expect(saveSpy).not.toHaveBeenCalled();
       expect(deleteSessionSpy).toHaveBeenCalledWith(sessionId);
+    });
+
+    /**
+     * 測試場景：terminateAndDeleteSession 會呼叫 deleteMainStatusMessage
+     * 預期結果：當 session 有 statusMessageId 時，應該嘗試刪除
+     */
+    it('terminateAndDeleteSession 會嘗試刪除主狀態卡（當有 statusMessageId）', async () => {
+      const manager = sessionManager as any;
+      const sessionId = 'sess_with_status_card';
+      const channelId = 'channel_with_status';
+      const statusMessageId = 'msg_status_123';
+      const statusChannelId = 'status_channel_456';
+
+      const loadedSession = new Session({
+        sessionId,
+        channelId,
+        userId: 'test-user',
+        prompt: 'test',
+        projectPath: '/tmp',
+      });
+      loadedSession.opencodeSessionId = 'ses_test_456';
+      loadedSession.threadId = null;
+      // 模擬 session 有 statusMessageId
+      (loadedSession.metadata as Record<string, unknown>).statusMessageId = statusMessageId;
+      (loadedSession.metadata as Record<string, unknown>).statusChannelId = statusChannelId;
+
+      // Mock Discord client
+      const mockChannel = {
+        messages: {
+          fetch: vi.fn().mockResolvedValue({ id: statusMessageId, delete: vi.fn().mockResolvedValue(undefined) }),
+        },
+      };
+      const mockDiscordClient = {
+        channels: {
+          fetch: vi.fn().mockResolvedValue(mockChannel),
+        },
+      };
+      manager.discordClient = mockDiscordClient;
+
+      manager.loadSession = vi.fn().mockResolvedValue(loadedSession);
+      manager.sdkAdapter = {
+        abortSession: vi.fn().mockResolvedValue(undefined),
+        deleteSession: vi.fn().mockResolvedValue(true),
+      };
+      manager.sessionEventManager = {
+        unsubscribe: vi.fn(),
+      };
+      manager.sqliteDb = {
+        isReady: vi.fn().mockReturnValue(true),
+        deleteSession: vi.fn(),
+      };
+
+      await sessionManager.terminateAndDeleteSession(sessionId, { deleteThread: false });
+
+      // 驗證 Discord client 被呼叫來刪除狀態卡
+      expect(mockDiscordClient.channels.fetch).toHaveBeenCalledWith(statusChannelId);
+      expect(mockChannel.messages.fetch).toHaveBeenCalledWith(statusMessageId);
+    });
+
+    /**
+     * 測試場景：status message fetch/delete 失敗不阻斷刪除流程
+     * 預期結果：即使刪除狀態卡失敗，session 仍被正確刪除
+     */
+    it('刪除狀態卡失敗時不阻斷 session 刪除流程', async () => {
+      const manager = sessionManager as any;
+      const sessionId = 'sess_status_delete_fail';
+      const channelId = 'channel_status_fail';
+      const statusMessageId = 'msg_fail_789';
+      const statusChannelId = 'status_channel_fail';
+
+      const loadedSession = new Session({
+        sessionId,
+        channelId,
+        userId: 'test-user',
+        prompt: 'test',
+        projectPath: '/tmp',
+      });
+      loadedSession.opencodeSessionId = 'ses_test_789';
+      loadedSession.threadId = null;
+      (loadedSession.metadata as Record<string, unknown>).statusMessageId = statusMessageId;
+      (loadedSession.metadata as Record<string, unknown>).statusChannelId = statusChannelId;
+
+      // Mock Discord client that throws
+      const mockDiscordClient = {
+        channels: {
+          fetch: vi.fn().mockRejectedValue(new Error('Discord API Error')),
+        },
+      };
+      manager.discordClient = mockDiscordClient;
+
+      const deleteSessionSpy = vi.fn().mockReturnValue(true);
+      manager.loadSession = vi.fn().mockResolvedValue(loadedSession);
+      manager.sdkAdapter = {
+        abortSession: vi.fn().mockResolvedValue(undefined),
+        deleteSession: vi.fn().mockResolvedValue(true),
+      };
+      manager.sessionEventManager = {
+        unsubscribe: vi.fn(),
+      };
+      manager.sqliteDb = {
+        isReady: vi.fn().mockReturnValue(true),
+        deleteSession: deleteSessionSpy,
+      };
+
+      // 不應該拋出錯誤
+      const result = await sessionManager.terminateAndDeleteSession(sessionId, { deleteThread: false });
+
+      // session 仍然被刪除
+      expect(result).toBeTruthy();
+      expect(deleteSessionSpy).toHaveBeenCalledWith(sessionId);
+    });
+
+    /**
+     * 測試場景：clearAllSessions 統計 deletedStatusMessages 且不因單一失敗中斷
+     * 預期結果：回傳包含 deletedStatusMessages，即使某些 session 刪除失敗也繼續
+     */
+    it('clearAllSessions 統計 deletedStatusMessages 且不因單一失敗中斷', async () => {
+      const manager = sessionManager as any;
+
+      const session1 = new Session({
+        sessionId: 'sess_clear_1',
+        channelId: 'channel_1',
+        userId: 'user_1',
+        prompt: 'test1',
+        projectPath: '/tmp',
+      });
+      session1.opencodeSessionId = 'ses_1';
+      (session1.metadata as Record<string, unknown>).statusMessageId = 'msg_1';
+      (session1.metadata as Record<string, unknown>).statusChannelId = 'ch_1';
+
+      const session2 = new Session({
+        sessionId: 'sess_clear_2',
+        channelId: 'channel_2',
+        userId: 'user_2',
+        prompt: 'test2',
+        projectPath: '/tmp',
+      });
+      session2.opencodeSessionId = 'ses_2';
+      // session2 沒有 statusMessageId
+
+      const session3 = new Session({
+        sessionId: 'sess_clear_3',
+        channelId: 'channel_3',
+        userId: 'user_3',
+        prompt: 'test3',
+        projectPath: '/tmp',
+      });
+      session3.opencodeSessionId = 'ses_3';
+      (session3.metadata as Record<string, unknown>).statusMessageId = 'msg_3';
+      (session3.metadata as Record<string, unknown>).statusChannelId = 'ch_3';
+
+      // Mock activeSessions + sqliteDb
+      manager.activeSessions = new Map([
+        ['sess_clear_1', session1],
+        ['sess_clear_3', session3],
+      ]);
+      manager.channelSessions = new Map();
+      manager.sqliteDb = {
+        isReady: vi.fn().mockReturnValue(true),
+        loadAllSessions: vi.fn().mockReturnValue([session2]),
+        deleteSession: vi.fn().mockReturnValue(true),
+      };
+      // Mock manager.loadSession for sessions not in activeSessions
+      manager.loadSession = vi.fn().mockImplementation(async (id: string) => {
+        if (id === 'sess_clear_2') return session2;
+        return null;
+      });
+      manager.sdkAdapter = {
+        abortSession: vi.fn().mockResolvedValue(undefined),
+        deleteSession: vi.fn().mockResolvedValue(true),
+      };
+      manager.sessionEventManager = {
+        unsubscribe: vi.fn(),
+      };
+      manager.discordClient = null; // 無 client 不影響統計邏輯
+
+      const mockThreadManager = {
+        isReady: vi.fn().mockReturnValue(true),
+        deleteDiscordThread: vi.fn().mockResolvedValue(undefined),
+        deleteThread: vi.fn(),
+        clearAllSessionThreads: vi.fn().mockResolvedValue({ deleted: 0, failed: 0 }),
+      };
+      manager.getThreadManager = vi.fn().mockReturnValue(mockThreadManager);
+
+      const result = await sessionManager.clearAllSessions({ deleteThreads: true });
+
+      expect(result.totalSessions).toBe(3);
+      expect(result.deletedSessions).toBe(3);
+      expect(result.deletedStatusMessages).toBe(2); // sess_clear_1 和 sess_clear_3 有 statusMessageId
+      expect(result.failed).toBe(0);
     });
   });
 });

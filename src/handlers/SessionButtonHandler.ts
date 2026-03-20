@@ -240,10 +240,8 @@ export class SessionButtonHandler {
         return;
       }
 
-      await this.updateMainStatusMessage(interaction, deleted, {
-        note: 'Session 已刪除',
-        removeComponents: true,
-      });
+      // 注意：主頻道狀態卡的刪除已由 SessionManager.terminateAndDeleteSession 處理
+      // 這裡不再呼叫 updateMainStatusMessage，避免刪了又 edit
 
       await interaction.editReply({
         content: `✅ Session \`${sessionId}\` 已刪除（已同步刪除 OpenCode Session 與 Discord 討論串）`,
