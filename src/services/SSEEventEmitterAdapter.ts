@@ -18,6 +18,7 @@ export type SDKEventType =
   | 'message.created'
   | 'message.part.updated'
   | 'message.part.delta'
+  | 'message.part.removed'
   // Tool events
   | 'tool_call'
   | 'tool_call_start'
@@ -225,6 +226,7 @@ const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
   'message.created': 'message',
   'message.part.updated': 'message',
   'message.part.delta': 'message',
+  'message.part.removed': null,
   
   // Tool events - map to 'tool_request'
   'tool_call': 'tool_request',
@@ -471,6 +473,13 @@ export class SSEEventEmitterAdapter
 
     switch (internalType) {
       case 'message':
+        // 先檢查 tool part，優先於文字內容處理
+        const toolPartData = this.extractToolPartData(props);
+        if (toolPartData) {
+          this.emitEvent('tool_request', toolPartData);
+          break;
+        }
+
         const messageRole = this.extractMessageRole(props);
         if (this.isIgnoredMessageRole(messageRole)) {
           break;
@@ -821,6 +830,163 @@ export class SSEEventEmitterAdapter
       options,
       multiple: Boolean(questionObject?.multiple || props.multiple || false),
     };
+  }
+
+  /**
+   * 從 tool part 中提取 ToolRequestEventData
+   * 支援 props.part, props.info.part, props.info.parts[], props.delta
+   * 當 part.type === 'tool' 時觸發
+   */
+  private extractToolPartData(props: SDKEventProperties): ToolRequestEventData | null {
+    const sessionId = props.session_id || props.sessionId || this.currentSessionId || '';
+
+    // 嘗試從多個來源找到 tool part
+    const toolParts: Array<{ part: Record<string, unknown>; source: string }> = [];
+
+    // 來源 1: props.part
+    if (props.part && typeof props.part === 'object') {
+      const part = props.part as Record<string, unknown>;
+      if (this.isToolPartType(part.type)) {
+        toolParts.push({ part, source: 'props.part' });
+      }
+    }
+
+    // 來源 2: props.delta (常見於 message.part.delta 事件)
+    if (props.delta && typeof props.delta === 'object') {
+      const delta = props.delta as Record<string, unknown>;
+      if (this.isToolPartType(delta.type)) {
+        toolParts.push({ part: delta, source: 'props.delta' });
+      }
+    }
+
+    // 來源 3: props.info.part
+    if (props.info && typeof props.info === 'object') {
+      const info = props.info as Record<string, unknown>;
+      if (info.part && typeof info.part === 'object') {
+        const infoPart = info.part as Record<string, unknown>;
+        if (this.isToolPartType(infoPart.type)) {
+          toolParts.push({ part: infoPart, source: 'props.info.part' });
+        }
+      }
+
+      // 來源 4: props.info.parts[]
+      if (Array.isArray(info.parts)) {
+        for (const candidate of info.parts) {
+          if (candidate && typeof candidate === 'object' && this.isToolPartType((candidate as Record<string, unknown>).type)) {
+            toolParts.push({ part: candidate as Record<string, unknown>, source: 'props.info.parts[]' });
+          }
+        }
+      }
+    }
+
+    // 從第一個找到的 tool part 提取資料
+    for (const { part } of toolParts) {
+      const toolName = this.extractToolNameFromPart(part);
+      if (toolName === 'unknown') continue;
+
+      const state = part.state && typeof part.state === 'object'
+        ? (part.state as Record<string, unknown>)
+        : {};
+
+      const status = this.extractToolStatusFromState(state, part);
+      const args = this.extractToolArgsFromState(state);
+      const result = state.output !== undefined ? state.output : undefined;
+      const error = typeof state.error === 'string' ? state.error : undefined;
+
+      // requestId: 優先 call_id，其次 id
+      const requestId = (typeof part.call_id === 'string' ? part.call_id : '')
+        || (typeof part.id === 'string' ? part.id : '')
+        || (typeof state.call_id === 'string' ? state.call_id : '')
+        || (typeof state.id === 'string' ? state.id : '')
+        || '';
+
+      return {
+        sessionId,
+        toolName,
+        args,
+        requestId,
+        status,
+        result,
+        error,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * 判斷 part type 是否為 tool 類型
+   */
+  private isToolPartType(type: unknown): boolean {
+    if (typeof type !== 'string') return false;
+    return type === 'tool';
+  }
+
+  /**
+   * 從 tool part 中提取工具名稱
+   * 優先順序: part.tool > part.tool_name > part.toolName > part.name > state.tool
+   */
+  private extractToolNameFromPart(part: Record<string, unknown>): string {
+    // 直接的 tool 欄位（最高優先）
+    if (typeof part.tool === 'string' && part.tool.trim()) return part.tool.trim();
+
+    // 擴充 fallback: tool_name, toolName, name
+    if (typeof part.tool_name === 'string' && part.tool_name.trim()) return part.tool_name.trim();
+    if (typeof part.toolName === 'string' && part.toolName.trim()) return part.toolName.trim();
+    if (typeof part.name === 'string' && part.name.trim()) return part.name.trim();
+
+    // state.tool (作為最後 fallback)
+    const state = part.state && typeof part.state === 'object'
+      ? (part.state as Record<string, unknown>)
+      : {};
+    if (typeof state.tool === 'string' && state.tool.trim()) return state.tool.trim();
+    // 也檢查 state.tool_name / state.toolName / state.name
+    if (typeof state.tool_name === 'string' && state.tool_name.trim()) return state.tool_name.trim();
+    if (typeof state.toolName === 'string' && state.toolName.trim()) return state.toolName.trim();
+    if (typeof state.name === 'string' && state.name.trim()) return state.name.trim();
+
+    return 'unknown';
+  }
+
+  /**
+   * 從 state 中提取工具狀態
+   */
+  private extractToolStatusFromState(
+    state: Record<string, unknown>,
+    part: Record<string, unknown>
+  ): 'pending' | 'running' | 'completed' | 'error' {
+    // state.status
+    if (typeof state.status === 'string') {
+      const s = state.status.toLowerCase();
+      if (s === 'pending' || s === 'running' || s === 'completed' || s === 'error') {
+        return s;
+      }
+    }
+
+    // part.status
+    if (typeof part.status === 'string') {
+      const s = part.status.toLowerCase();
+      if (s === 'pending' || s === 'running' || s === 'completed' || s === 'error') {
+        return s;
+      }
+    }
+
+    // 從 input/output/error 推斷狀態
+    if (typeof state.error === 'string' && state.error.trim()) return 'error';
+    if (state.output !== undefined) return 'completed';
+    if (state.input !== undefined) return 'running';
+    return 'pending';
+  }
+
+  /**
+   * 從 state.input 中提取工具參數
+   */
+  private extractToolArgsFromState(state: Record<string, unknown>): Record<string, unknown> {
+    const input = state.input;
+    if (input && typeof input === 'object' && !Array.isArray(input)) {
+      return input as Record<string, unknown>;
+    }
+    return {};
   }
 
   /**

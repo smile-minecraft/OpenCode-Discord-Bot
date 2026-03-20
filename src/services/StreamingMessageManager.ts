@@ -83,8 +83,9 @@ export interface ErrorEventData {
  */
 export interface ToolUpdateEventData {
   sessionId: string;
-  toolId: string;
+  toolId?: string;
   toolName: string;
+  requestId?: string;
   status?: 'pending' | 'running' | 'completed' | 'error';
   args?: Record<string, unknown>;
   result?: unknown;
@@ -167,6 +168,13 @@ const STREAM_IDLE_TIMEOUT = 60000;
 
 /** 工具狀態更新間隔（毫秒） */
 const TOOL_STATE_UPDATE_INTERVAL = 1000;
+
+/**
+ * 保守去重時間窗口（毫秒）
+ * @description 無 requestId 時，只有在極短時間內（<=300ms）且 payload signature 完全相同時
+ *              才視為 duplicate event echo。超過此窗口一律視為新調用，避免誤殺合法重複呼叫。
+ */
+const CONSERVATIVE_DEDUP_WINDOW_MS = 300;
 
 // ============== Discord Rate Limiter 類別 ==============
 
@@ -382,6 +390,9 @@ export class StreamingMessageManager {
 
   /** 已設置事件處理器的適配器集合 */
   private adaptersWithHandlers = new WeakSet<SSEEventEmitterAdapter>();
+
+  /** Tool 追蹤去重映射: sessionId+requestId -> toolId (避免 tool_call* + message.part.* 同時出現造成重複) */
+  private toolTrackingDedup: Map<string, string> = new Map();
 
   /**
    * 建構子
@@ -851,35 +862,139 @@ export class StreamingMessageManager {
   private handleToolRequestEvent(data: ToolUpdateEventData): void {
     this.touchStreamBySession(data.sessionId);
     const normalizedStatus = data.status ?? 'pending';
-
     const toolStateTracker = getToolStateTracker();
 
-    // 追蹤新的工具執行
+    // 生成去重鍵：優先使用 sessionId + requestId（強去重）
+    const dedupKey = data.requestId
+      ? `${data.sessionId}:${data.requestId}`
+      : null;
+
+    // 獲取該 session 的所有工具（確保是陣列）
+    const allTools = toolStateTracker.getSessionTools(data.sessionId) || [];
+
+    // 嘗試找到現有的工具並更新狀態
+    let existingTool: { id: string; toolName: string; status: string; args?: Record<string, unknown>; startedAt: number } | undefined;
+
+    // 優先用 requestId 匹配
+    if (dedupKey) {
+      existingTool = allTools.find(t => this.toolTrackingDedup.get(dedupKey!) === t.id);
+    }
+
+    // 若無法用 requestId 匹配，嘗試用 toolName + argsSignature + 可轉移狀態匹配
+    // 這是保守策略：只有狀態可轉移時才匹配
+    if (!existingTool && normalizedStatus !== 'pending') {
+      const argsSignature = this.hashArgs(data.args);
+
+      if (normalizedStatus === 'running') {
+        // running 只能匹配 pending 狀態，且 args 必須相同
+        existingTool = allTools.find(t =>
+          t.toolName === data.toolName &&
+          t.status === 'pending' &&
+          this.hashArgs(t.args) === argsSignature
+        );
+      } else if (normalizedStatus === 'completed') {
+        // completed 優先匹配 running 狀態，其次匹配 pending（視為快速完成）
+        // 使用兩段式匹配，避免陣列順序錯配
+        existingTool = allTools.find(t =>
+          t.toolName === data.toolName &&
+          t.status === 'running' &&
+          this.hashArgs(t.args) === argsSignature
+        );
+        if (!existingTool) {
+          existingTool = allTools.find(t =>
+            t.toolName === data.toolName &&
+            t.status === 'pending' &&
+            this.hashArgs(t.args) === argsSignature
+          );
+        }
+      } else if (normalizedStatus === 'error') {
+        // error 可以匹配 running 或 pending（視為執行失敗）
+        existingTool = allTools.find(t =>
+          t.toolName === data.toolName &&
+          (t.status === 'running' || t.status === 'pending') &&
+          this.hashArgs(t.args) === argsSignature
+        );
+      }
+    }
+
+    // 追蹤新的工具執行（避免重複）
     if (normalizedStatus === 'pending') {
+      // 檢查是否已追蹤過（舊 tool_call* + 新 message.part.* 同時出現時）
+      if (dedupKey && this.toolTrackingDedup.has(dedupKey)) {
+        logger.debug(`[StreamingMessageManager] Tool already tracked, skipping duplicate: ${dedupKey}`);
+        return;
+      }
+
+      // 無 requestId 時：保守去重策略
+      // 只在極短時間內（CONSERVATIVE_DEDUP_WINDOW_MS=300ms）且 payload signature 完全相同時
+      // 才視為 duplicate event echo，避免誤殺合法重複呼叫
+      if (!dedupKey) {
+        const conservativeTime = Date.now() - CONSERVATIVE_DEDUP_WINDOW_MS;
+        const argsHash = this.hashArgs(data.args);
+
+        for (const tool of allTools) {
+          if (
+            tool.toolName === data.toolName &&
+            tool.startedAt >= conservativeTime
+          ) {
+            const existingArgsHash = this.hashArgs(tool.args);
+            if (existingArgsHash === argsHash) {
+              // 在極短窗口內且 args 相同，視為重複
+              logger.debug(`[StreamingMessageManager] Tool in conservative window with same args, skipping: ${data.toolName}`);
+              return;
+            }
+          }
+        }
+      }
+
       const toolExecution = toolStateTracker.trackTool(data.sessionId, data.toolName, data.args || {});
+      // 記錄去重映射
+      if (dedupKey) {
+        this.toolTrackingDedup.set(dedupKey, toolExecution.id);
+      }
       this.queueToolStateUpdate(data.sessionId, toolExecution.id);
       logger.info(`[StreamingMessageManager] Tool requested: ${data.toolName} (${data.sessionId})`);
     } else if (normalizedStatus === 'running') {
-      // 嘗試找到現有的工具並更新狀態
-      const existingTools = toolStateTracker.getSessionTools(data.sessionId);
-      const existingTool = existingTools.find(t => t.toolName === data.toolName && t.status === 'pending');
       if (existingTool) {
         toolStateTracker.startTool(data.sessionId, existingTool.id);
         this.queueToolStateUpdate(data.sessionId, existingTool.id);
+      } else {
+        // 找不到既有工具時（可能是第一個事件就是 running），直接建立追蹤
+        logger.debug(`[StreamingMessageManager] No existing tool found for running, creating new tracking: ${data.toolName}`);
+        const toolExecution = toolStateTracker.trackTool(data.sessionId, data.toolName, data.args || {});
+        toolStateTracker.startTool(data.sessionId, toolExecution.id);
+        if (dedupKey) {
+          this.toolTrackingDedup.set(dedupKey, toolExecution.id);
+        }
+        this.queueToolStateUpdate(data.sessionId, toolExecution.id);
       }
     } else if (normalizedStatus === 'completed') {
-      const existingTools = toolStateTracker.getSessionTools(data.sessionId);
-      const existingTool = existingTools.find(t => t.toolName === data.toolName && t.status === 'running');
       if (existingTool) {
         toolStateTracker.completeTool(data.sessionId, existingTool.id, data.result);
         this.queueToolStateUpdate(data.sessionId, existingTool.id);
+      } else {
+        // 找不到既有工具時（可能是第一個事件就是 completed），直接建立追蹤
+        logger.debug(`[StreamingMessageManager] No existing tool found for completed, creating new tracking: ${data.toolName}`);
+        const toolExecution = toolStateTracker.trackTool(data.sessionId, data.toolName, data.args || {});
+        toolStateTracker.completeTool(data.sessionId, toolExecution.id, data.result);
+        if (dedupKey) {
+          this.toolTrackingDedup.set(dedupKey, toolExecution.id);
+        }
+        this.queueToolStateUpdate(data.sessionId, toolExecution.id);
       }
     } else if (normalizedStatus === 'error') {
-      const existingTools = toolStateTracker.getSessionTools(data.sessionId);
-      const existingTool = existingTools.find(t => t.toolName === data.toolName);
       if (existingTool) {
         toolStateTracker.errorTool(data.sessionId, existingTool.id, data.error || 'Unknown error');
         this.queueToolStateUpdate(data.sessionId, existingTool.id);
+      } else {
+        // 找不到既有工具時（可能是第一個事件就是 error），直接建立追蹤
+        logger.debug(`[StreamingMessageManager] No existing tool found for error, creating new tracking: ${data.toolName}`);
+        const toolExecution = toolStateTracker.trackTool(data.sessionId, data.toolName, data.args || {});
+        toolStateTracker.errorTool(data.sessionId, toolExecution.id, data.error || 'Unknown error');
+        if (dedupKey) {
+          this.toolTrackingDedup.set(dedupKey, toolExecution.id);
+        }
+        this.queueToolStateUpdate(data.sessionId, toolExecution.id);
       }
     }
   }
@@ -1261,6 +1376,13 @@ export class StreamingMessageManager {
       }
     }
 
+    // 清理 toolTrackingDedup 中該 session 的所有去重映射
+    for (const key of this.toolTrackingDedup.keys()) {
+      if (key.startsWith(`${sessionId}:`)) {
+        this.toolTrackingDedup.delete(key);
+      }
+    }
+
     logger.info(`[StreamingMessageManager] Stream cleaned up: ${sessionId}`);
   }
 
@@ -1291,6 +1413,21 @@ export class StreamingMessageManager {
       return `${text.slice(0, maxLength)}\n...`;
     } catch {
       return '{"error":"unable to stringify args"}';
+    }
+  }
+
+  /**
+   * 生成 args 的簡單 hash（用於去重檢測）
+   * @description 使用簡單的字串化+長度截取作為 hash，避免循環引用
+   */
+  private hashArgs(args?: Record<string, unknown>): string {
+    if (!args || Object.keys(args).length === 0) {
+      return 'empty';
+    }
+    try {
+      return JSON.stringify(args, Object.keys(args).sort());
+    } catch {
+      return 'unstringifiable';
     }
   }
 

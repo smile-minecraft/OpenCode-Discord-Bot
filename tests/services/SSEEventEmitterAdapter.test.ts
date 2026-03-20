@@ -758,6 +758,420 @@ describe('SSEEventEmitterAdapter', () => {
       );
     });
   });
+
+  describe('message.part.updated / message.part.delta tool part 轉換', () => {
+    it('message.part.updated 附帶 tool part 應觸發 tool_request 事件', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-tool-1',
+          part: {
+            type: 'tool',
+            id: 'call-abc123',
+            tool: 'Read',
+            state: {
+              status: 'running',
+              input: { path: '/test.txt' },
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'tool_request',
+          data: expect.objectContaining({
+            sessionId: 'session-tool-1',
+            toolName: 'Read',
+            args: { path: '/test.txt' },
+            requestId: 'call-abc123',
+            status: 'running',
+          }),
+        })
+      );
+    });
+
+    it('tool part 應從 props.info.part 來源提取資料', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.delta',
+        properties: {
+          sessionId: 'session-tool-2',
+          info: {
+            part: {
+              type: 'tool',
+              call_id: 'call-xyz789',
+              tool: 'Bash',
+              state: {
+                status: 'completed',
+                input: { command: 'ls -la' },
+                output: 'total 12\n-rw-r-- 1 user user 120 Mar 20 10:00 test.txt',
+              },
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-2');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.toolName).toBe('Bash');
+      expect(call.data.args).toEqual({ command: 'ls -la' });
+      expect(call.data.requestId).toBe('call-xyz789');
+      expect(call.data.status).toBe('completed');
+      expect(call.data.result).toBe('total 12\n-rw-r-- 1 user user 120 Mar 20 10:00 test.txt');
+    });
+
+    it('tool part 應從 props.info.parts[] 來源提取資料', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          sessionId: 'session-tool-3',
+          info: {
+            parts: [
+              { type: 'text', text: 'Some text before' },
+              { type: 'tool', id: 'call-def456', tool: 'Glob', state: { status: 'pending', input: { pattern: '**/*.ts' } } },
+              { type: 'text', text: 'Some text after' },
+            ],
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      const messageHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+      adapter.on('message', messageHandler);
+
+      adapter.start(mockEventStream, 'session-tool-3');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      // tool_request 應該被觸發，且不發送 message
+      expect(toolHandler).toHaveBeenCalledTimes(1);
+      const toolCall = toolHandler.mock.calls[0][0];
+      expect(toolCall.data.toolName).toBe('Glob');
+      expect(toolCall.data.args).toEqual({ pattern: '**/*.ts' });
+      expect(toolCall.data.requestId).toBe('call-def456');
+      expect(toolCall.data.status).toBe('pending');
+    });
+
+    it('tool part 狀態為 error 時應包含 error 欄位', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-tool-4',
+          part: {
+            type: 'tool',
+            id: 'call-err001',
+            tool: 'Write',
+            state: {
+              status: 'error',
+              input: { path: '/nonexistent/file.txt', content: 'data' },
+              error: 'ENOENT: no such file or directory',
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-4');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.status).toBe('error');
+      expect(call.data.error).toBe('ENOENT: no such file or directory');
+      expect(call.data.result).toBeUndefined();
+    });
+
+    it('tool part 無 input 時 args 應為空物件', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          sessionId: 'session-tool-5',
+          part: {
+            type: 'tool',
+            tool: 'SomeTool',
+            state: {
+              status: 'completed',
+              output: 'done',
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-5');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.args).toEqual({});
+    });
+
+    it('message.part.removed 應被靜默忽略，不發送 tool_request', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.removed',
+        properties: {
+          session_id: 'session-tool-6',
+          part: {
+            type: 'tool',
+            id: 'call-removed',
+            tool: 'Read',
+            state: { status: 'completed' },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      const messageHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+      adapter.on('message', messageHandler);
+
+      adapter.start(mockEventStream, 'session-tool-6');
+
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(toolHandler).not.toHaveBeenCalled();
+      expect(messageHandler).not.toHaveBeenCalled();
+    });
+
+    it('非 tool part 應正常發送 message 事件', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-tool-7',
+          part: {
+            type: 'text',
+            text: 'Hello from tool context',
+          },
+        },
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      const messageHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+      adapter.on('message', messageHandler);
+
+      adapter.start(mockEventStream, 'session-tool-7');
+
+      await vi.waitFor(() => {
+        expect(messageHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler).not.toHaveBeenCalled();
+      expect(messageHandler.mock.calls[0][0].data.content).toBe('Hello from tool context');
+    });
+
+    it('message.part.delta 附帶 tool part（於 props.delta）應觸發 tool_request', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.delta',
+        properties: {
+          session_id: 'session-delta-1',
+          delta: {
+            type: 'tool',
+            call_id: 'call-delta001',
+            tool: 'Search',
+            state: {
+              status: 'running',
+              input: { query: 'opencode discord bot' },
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-delta-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.toolName).toBe('Search');
+      expect(call.data.args).toEqual({ query: 'opencode discord bot' });
+      expect(call.data.requestId).toBe('call-delta001');
+      expect(call.data.status).toBe('running');
+    });
+
+    it('tool part 應支援 tool_name / toolName / name 欄位 fallback', async () => {
+      const testCases = [
+        { field: 'tool_name', value: 'ToolViaToolName', expected: 'ToolViaToolName' },
+        { field: 'toolName', value: 'ToolViaToolNameCamel', expected: 'ToolViaToolNameCamel' },
+        { field: 'name', value: 'ToolViaNameField', expected: 'ToolViaNameField' },
+      ];
+
+      for (const tc of testCases) {
+        vi.clearAllMocks();
+        const adapterForTest = new SSEEventEmitterAdapter();
+
+        const event: SDKEvent = {
+          type: 'message.part.updated',
+          properties: {
+            session_id: `session-name-fallback-${tc.field}`,
+            part: {
+              type: 'tool',
+              id: `call-${tc.field}`,
+              [tc.field]: tc.value,
+              state: { status: 'pending' },
+            },
+          } as any,
+        };
+
+        const mockEventStream = createMockEventStream([event]);
+        const toolHandler = vi.fn();
+        adapterForTest.on('tool_request', toolHandler);
+        adapterForTest.start(mockEventStream, `session-name-fallback-${tc.field}`);
+
+        await vi.waitFor(() => {
+          expect(toolHandler).toHaveBeenCalled();
+        });
+
+        expect(toolHandler.mock.calls[0][0].data.toolName).toBe(tc.expected);
+        adapterForTest.dispose();
+      }
+    });
+
+    it('tool_call_end 事件應正確映射 completed 狀態', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call_end',
+        properties: {
+          session_id: 'session-tool-end-1',
+          tool_name: 'Read',
+          request_id: 'req-end-001',
+          result: { content: 'file contents here' },
+        },
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-end-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.status).toBe('completed');
+      expect(call.data.result).toEqual({ content: 'file contents here' });
+    });
+
+    it('tool_call_end 事件攜帶 error 欄位時應映射為 error 狀態', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call_end',
+        properties: {
+          session_id: 'session-tool-end-2',
+          tool_name: 'Write',
+          request_id: 'req-end-002',
+          error: 'EACCES: permission denied',
+        },
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-end-2');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.status).toBe('error');
+      expect(call.data.error).toBe('EACCES: permission denied');
+    });
+
+    it('tool_call_end 狀態應從 state.error 推斷為 error（無 props.error 時）', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call_end',
+        properties: {
+          session_id: 'session-tool-end-3',
+          tool_name: 'Bash',
+          request_id: 'req-end-003',
+          status: 'error',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-tool-end-3');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.status).toBe('error');
+    });
+
+    it('state.tool / state.tool_name 應作為 toolName 的最後 fallback', async () => {
+      const event: SDKEvent = {
+        type: 'message.part.updated',
+        properties: {
+          session_id: 'session-state-fallback',
+          part: {
+            type: 'tool',
+            id: 'call-state-fb',
+            state: {
+              tool: 'ToolFromStateTool',
+              status: 'running',
+            },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-state-fallback');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      expect(toolHandler.mock.calls[0][0].data.toolName).toBe('ToolFromStateTool');
+    });
+  });
 });
 
 // ============== 輔助函數 ==============
