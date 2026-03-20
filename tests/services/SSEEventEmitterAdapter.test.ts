@@ -250,6 +250,87 @@ describe('SSEEventEmitterAdapter', () => {
       });
     });
 
+    it('question.asked 應該支援 sessionID + questions[] payload', async () => {
+      const event: SDKEvent = {
+        type: 'question.asked',
+        properties: {
+          id: 'q-top-level',
+          sessionID: 'session-xyz',
+          questions: [
+            {
+              id: 'q-1',
+              text: '請選擇下一步',
+              options: [
+                { label: '繼續', value: 'continue' },
+                { label: '停止', value: 'stop' },
+              ],
+            },
+          ],
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const handler = vi.fn();
+      adapter.on('question', handler);
+
+      adapter.start(mockEventStream, 'session-fallback');
+
+      await vi.waitFor(() => {
+        expect(handler).toHaveBeenCalled();
+      });
+
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'question',
+          data: expect.objectContaining({
+            sessionId: 'session-xyz',
+            questionId: 'q-1',
+            text: '請選擇下一步',
+            options: expect.arrayContaining([
+              expect.objectContaining({ label: '繼續', value: 'continue' }),
+            ]),
+          }),
+        })
+      );
+    });
+
+    it('question options 應該支援 title/name/id 欄位', async () => {
+      const event: SDKEvent = {
+        type: 'question.asked',
+        properties: {
+          sessionID: 'session-abc',
+          questions: [
+            {
+              id: 'q-2',
+              title: '要執行哪個操作？',
+              choices: [
+                { title: '讀檔', id: 'read' },
+                { name: '搜尋', value: 'glob' },
+              ],
+            },
+          ],
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const handler = vi.fn();
+      adapter.on('question', handler);
+
+      adapter.start(mockEventStream, 'session-fallback');
+
+      await vi.waitFor(() => {
+        expect(handler).toHaveBeenCalled();
+      });
+
+      const call = handler.mock.calls[0][0];
+      expect(call.data.options).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: '讀檔', value: 'read' }),
+          expect.objectContaining({ label: '搜尋', value: 'glob' }),
+        ])
+      );
+    });
+
     it('session.started 應該觸發 connected 事件', () => {
       const event: SDKEvent = {
         type: 'session.started',
