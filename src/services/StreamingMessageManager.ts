@@ -958,6 +958,17 @@ export class StreamingMessageManager {
             this.hashArgs(t.args) === argsSignature
           );
         }
+        // Fallback: completed 無 requestId + 空 args 時，以 toolName+running 匹配最新一筆
+        // 避免丟失先前既有 args（如 running 事件的非空 args）
+        if (!existingTool && !data.requestId && this.hashArgs(data.args) === 'empty') {
+          const runningTools = allTools
+            .filter(t => t.toolName === data.toolName && t.status === 'running')
+            .sort((a, b) => b.startedAt - a.startedAt); // 取最新
+          if (runningTools.length > 0) {
+            existingTool = runningTools[0];
+            logger.debug(`[StreamingMessageManager] Fallback: matched completed to running tool ${existingTool.id} by name`);
+          }
+        }
       } else if (normalizedStatus === 'error') {
         // error 可以匹配 running 或 pending（視為執行失敗）
         existingTool = allTools.find(t =>
@@ -1228,7 +1239,7 @@ export class StreamingMessageManager {
       }
       // 一般物件
       const keys = Object.keys(args as Record<string, unknown>);
-      if (keys.length === 0) return '({})';
+      if (keys.length === 0) return '()';
       const serialized = this.serializeArgsForSummary(args as Record<string, unknown>);
       return `(${serialized})`;
     }

@@ -1388,7 +1388,7 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
 
       expect(mockChannel.send).toHaveBeenCalled();
       const sentContent = mockChannel.send.mock.calls[0][0].content;
-      expect(sentContent).toBe('⏳ `Bash({})`');
+      expect(sentContent).toBe('⏳ `Bash()`');
     });
 
     it('string args 應直接顯示為 ("value")，不轉成 {}', async () => {
@@ -1591,6 +1591,233 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
 
       const stream = privateState.activeStreams.get('channel-1:session-1');
       expect(stream.userPrompt).toBe('My custom prompt');
+    });
+  });
+
+  describe('completed 無 requestId + 空 args 匹配既有 running 工具 - Fallback', () => {
+    it('running(args有值, 無requestId) -> completed(args空, 無requestId) 應匹配到同一工具', () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-fallback:session-fallback';
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(null) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-fallback',
+        channelId: 'channel-fallback',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      const handleToolRequestEvent = (manager as any).handleToolRequestEvent.bind(manager);
+
+      // Step 1: running 事件，無 requestId，但 args 有值
+      mockTrackTool.mockReturnValueOnce({
+        id: 'tool-fallback-1',
+        toolName: 'Bash',
+        status: 'pending',
+        args: { command: 'ls -la' },
+        startedAt: Date.now(),
+      });
+
+      handleToolRequestEvent({
+        sessionId: 'session-fallback',
+        toolName: 'Bash',
+        status: 'running',
+        args: { command: 'ls -la' }, // 有 args
+        // 無 requestId
+      });
+
+      expect(mockTrackTool).toHaveBeenCalledTimes(1);
+      expect(mockStartTool).toHaveBeenCalledWith('session-fallback', 'tool-fallback-1');
+
+      // Step 2: completed 事件，無 requestId，args 為空（常見於 SDK 不回傳 completed args）
+      mockTrackTool.mockClear();
+      mockStartTool.mockClear();
+      mockCompleteTool.mockClear();
+
+      // 模擬 running 狀態的工具存在
+      mockGetSessionTools.mockReturnValueOnce([{
+        id: 'tool-fallback-1',
+        toolName: 'Bash',
+        status: 'running',
+        args: { command: 'ls -la' }, // running 有 args
+        startedAt: Date.now(),
+      }]);
+
+      handleToolRequestEvent({
+        sessionId: 'session-fallback',
+        toolName: 'Bash',
+        status: 'completed',
+        args: {}, // 空 args（無 requestId）
+        result: { output: 'total 0' },
+      });
+
+      // 應呼叫 completeTool 而非 trackTool
+      expect(mockCompleteTool).toHaveBeenCalledTimes(1);
+      expect(mockCompleteTool).toHaveBeenCalledWith('session-fallback', 'tool-fallback-1', { output: 'total 0' });
+      // 不應建立新追蹤
+      expect(mockTrackTool).not.toHaveBeenCalled();
+    });
+
+    it('completed 有 requestId 時不應觸發 fallback', () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-no-fallback:session-no-fallback';
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(null) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-no-fallback',
+        channelId: 'channel-no-fallback',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      const handleToolRequestEvent = (manager as any).handleToolRequestEvent.bind(manager);
+
+      // completed 有 requestId，空 args，不應觸發 fallback
+      mockGetSessionTools.mockReturnValueOnce([]);
+      mockTrackTool.mockReturnValueOnce({
+        id: 'tool-no-fallback-new',
+        toolName: 'Read',
+        status: 'pending',
+        args: {},
+        startedAt: Date.now(),
+      });
+
+      handleToolRequestEvent({
+        sessionId: 'session-no-fallback',
+        toolName: 'Read',
+        requestId: 'call-with-id', // 有 requestId
+        status: 'completed',
+        args: {}, // 空 args
+        result: { content: 'file content' },
+      });
+
+      // 有 requestId 時，應建立新追蹤而非 fallback
+      expect(mockTrackTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('completed 無 requestId 但有非空 args 時不應觸發 fallback', () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-args-no-fallback:session-args-no-fallback';
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(null) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-args-no-fallback',
+        channelId: 'channel-args-no-fallback',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      const handleToolRequestEvent = (manager as any).handleToolRequestEvent.bind(manager);
+
+      // completed 無 requestId 但有非空 args，應精確匹配
+      mockGetSessionTools.mockReturnValueOnce([{
+        id: 'tool-args-match',
+        toolName: 'Write',
+        status: 'running',
+        args: { path: '/file.txt' },
+        startedAt: Date.now(),
+      }]);
+
+      handleToolRequestEvent({
+        sessionId: 'session-args-no-fallback',
+        toolName: 'Write',
+        // 無 requestId
+        status: 'completed',
+        args: { path: '/file.txt' }, // 非空 args，應精確匹配
+        result: { success: true },
+      });
+
+      // 應精確匹配而非 fallback
+      expect(mockCompleteTool).toHaveBeenCalledWith('session-args-no-fallback', 'tool-args-match', { success: true });
+      expect(mockTrackTool).not.toHaveBeenCalled();
+    });
+
+    it('多個同名 running 工具時，completed fallback 應匹配最新一筆', () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-multi:session-multi';
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(null) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-multi',
+        channelId: 'channel-multi',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      const handleToolRequestEvent = (manager as any).handleToolRequestEvent.bind(manager);
+
+      // 三個同名 Bash running 工具，按 startedAt 排序
+      mockGetSessionTools.mockReturnValueOnce([
+        {
+          id: 'tool-oldest',
+          toolName: 'Bash',
+          status: 'running',
+          args: { command: 'echo first' },
+          startedAt: Date.now() - 2000, // 2秒前
+        },
+        {
+          id: 'tool-middle',
+          toolName: 'Bash',
+          status: 'running',
+          args: { command: 'echo second' },
+          startedAt: Date.now() - 1000, // 1秒前
+        },
+        {
+          id: 'tool-newest',
+          toolName: 'Bash',
+          status: 'running',
+          args: { command: 'echo third' },
+          startedAt: Date.now(), // 最近
+        },
+      ]);
+
+      handleToolRequestEvent({
+        sessionId: 'session-multi',
+        toolName: 'Bash',
+        status: 'completed',
+        args: {}, // 空 args
+        result: { output: 'third' },
+      });
+
+      // 應匹配最新一筆（tool-newest）
+      expect(mockCompleteTool).toHaveBeenCalledWith('session-multi', 'tool-newest', { output: 'third' });
+      expect(mockTrackTool).not.toHaveBeenCalled();
     });
   });
 });

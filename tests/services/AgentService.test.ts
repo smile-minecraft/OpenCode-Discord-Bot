@@ -206,6 +206,36 @@ describe('AgentService - 主代理過濾', () => {
       const agent = createAgent({ id: 'core', description: 'Primary core functionality' });
       expect(isPrimaryAgent(agent)).toBe(false);
     });
+
+    // ========== builtIn 排除測試 ==========
+    it('builtIn=true 且 id=general 應該不是主代理', () => {
+      const agent = createAgent({ id: 'general', builtIn: true });
+      expect(isPrimaryAgent(agent)).toBe(false);
+    });
+
+    it('builtIn=true 且 id=arch 應該不是主代理', () => {
+      const agent = createAgent({ id: 'arch', builtIn: true });
+      expect(isPrimaryAgent(agent)).toBe(false);
+    });
+
+    it('builtIn=false 且 id=general 應該是主代理', () => {
+      const agent = createAgent({ id: 'general', builtIn: false });
+      expect(isPrimaryAgent(agent)).toBe(true);
+    });
+
+    it('builtIn=undefined 且 id=general 應該是主代理（SDK 未回傳時的 fallback）', () => {
+      const agent = createAgent({ id: 'general', builtIn: undefined });
+      expect(isPrimaryAgent(agent)).toBe(true);
+    });
+
+    it('builtIn=true 時應直接排除，不檢查 mode 或 id 白名單', () => {
+      const agent = createAgent({
+        id: 'arch',
+        mode: 'primary', // 通常會通過，但 builtIn=true 優先排除
+        builtIn: true,
+      });
+      expect(isPrimaryAgent(agent)).toBe(false);
+    });
   });
 
   describe('filterPrimaryAgents()', () => {
@@ -321,6 +351,61 @@ describe('AgentService - 主代理過濾', () => {
 
       expect(result.length).toBe(3);
       expect(result.map(a => a.id)).toEqual(['arch', 'build', 'custom-agent']);
+    });
+
+    // ========== builtIn 排除測試 ==========
+    it('filterPrimaryAgents 應該排除所有 builtIn=true 的代理', () => {
+      const agents = [
+        createAgent({ id: 'arch', builtIn: true }),
+        createAgent({ id: 'build', builtIn: true }),
+        createAgent({ id: 'implementer', builtIn: true }), // 不在白名單
+        createAgent({ id: 'custom-primary', description: '這是自訂主代理', builtIn: true }),
+      ];
+
+      const result = filterPrimaryAgents(agents);
+
+      // 無 general 作為 fallback，回傳空陣列
+      expect(result.length).toBe(0);
+    });
+
+    it('filterPrimaryAgents 當所有代理都是 builtIn=true 時，應回傳空陣列（fallback 也排除 builtIn）', () => {
+      const agents = [
+        createAgent({ id: 'arch', builtIn: true }),
+        createAgent({ id: 'build', builtIn: true }),
+        createAgent({ id: 'general', builtIn: true }),
+      ];
+
+      const result = filterPrimaryAgents(agents);
+
+      // fallback 也排除 builtIn=true，所以回傳空陣列
+      expect(result.length).toBe(0);
+    });
+
+    it('filterPrimaryAgents 混合 builtIn=true/false 時只返回非 builtIn 的主代理', () => {
+      const agents = [
+        createAgent({ id: 'arch', builtIn: true }),    // 排除
+        createAgent({ id: 'build', builtIn: false }), // 通過
+        createAgent({ id: 'general', builtIn: false }), // 通過
+        createAgent({ id: 'implementer', builtIn: true }), // 排除（不在白名單）
+        createAgent({ id: 'custom-agent', description: '這是主代理', builtIn: false }), // 通過
+      ];
+
+      const result = filterPrimaryAgents(agents);
+
+      expect(result.length).toBe(3);
+      expect(result.map(a => a.id)).toEqual(['build', 'general', 'custom-agent']);
+    });
+
+    it('filterPrimaryAgents builtIn=undefined 的代理應正常通過白名單檢查', () => {
+      const agents = [
+        createAgent({ id: 'arch' }), // builtIn=undefined，白名單通過
+        createAgent({ id: 'implementer' }), // builtIn=undefined，不在白名單
+      ];
+
+      const result = filterPrimaryAgents(agents);
+
+      expect(result.length).toBe(1);
+      expect(result[0].id).toBe('arch');
     });
   });
 });

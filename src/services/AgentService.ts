@@ -38,6 +38,11 @@ const PRIMARY_AGENT_IDS = new Set(['arch', 'build', 'review', 'ultra', 'general'
  * 注意：「primary」單獨出現不作數，因為太寬鬆會誤判「primary color」等無關描述
  */
 export function isPrimaryAgent(agent: RuntimeAgentDefinition): boolean {
+  // 排除 built-in 內建代理，不出現在使用者可選的 UI 列表中
+  if (agent.builtIn === true) {
+    return false;
+  }
+
   // 優先：SDK mode 判定（若有 mode 欄位且為 primary，則為主代理）
   if (agent.mode !== undefined) {
     return agent.mode.toLowerCase() === 'primary';
@@ -64,7 +69,7 @@ export function filterPrimaryAgents(agents: RuntimeAgentDefinition[]): RuntimeAg
 
   // Fallback: 若過濾後為空，回傳 'general' 單一代理
   if (filtered.length === 0) {
-    const generalAgent = agents.find((a) => a.id === 'general');
+    const generalAgent = agents.find((a) => a.id === 'general' && a.builtIn !== true);
     if (generalAgent) {
       return [generalAgent];
     }
