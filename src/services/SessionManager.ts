@@ -893,6 +893,7 @@ export interface ClearSessionsResult {
       await this.sdkAdapter.sendPrompt({
         sessionId: opencodeSessionId,
         prompt,
+        directory: session.projectPath,
         model: promptModel,
         agent: session.agent,
       });

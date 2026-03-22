@@ -483,7 +483,7 @@ export class ProjectManager {
   /**
    * 綁定專案到頻道
    */
-  bindProjectToChannel(projectId: string, channelId: string): void {
+  async bindProjectToChannel(projectId: string, channelId: string): Promise<void> {
     // 檢查專案是否存在
     if (!this.projects.has(projectId)) {
       throw new Error('專案不存在');
@@ -505,12 +505,15 @@ export class ProjectManager {
       channelId,
       projectName: project.name,
     });
+
+    // 持久化綁定
+    await this.save();
   }
 
   /**
    * 解除頻道綁定
    */
-  unbindChannel(channelId: string): boolean {
+  async unbindChannel(channelId: string): Promise<boolean> {
     const binding = this.channelBindings.get(channelId);
     if (!binding) {
       return false;
@@ -528,6 +531,9 @@ export class ProjectManager {
       projectId: binding.projectId,
       channelId,
     });
+
+    // 持久化解綁定
+    await this.save();
 
     return true;
   }

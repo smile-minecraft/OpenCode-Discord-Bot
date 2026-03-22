@@ -686,5 +686,43 @@ describe('SessionManager', () => {
       const savedSession = saveSessionSpy.mock.calls[0][0];
       expect(savedSession.status).toBe('completed');
     });
+
+    /**
+     * sendPrompt 測試：驗證 directory 參數正確傳遞到 SDK
+     */
+    it('sendPrompt 應該傳遞 session.projectPath 作為 directory 參數', async () => {
+      const manager = sessionManager as any;
+      const sessionId = 'sess_send_prompt_dir';
+      const channelId = 'channel_send_prompt';
+      const projectPath = '/test/project/path';
+
+      const runningSession = new Session({
+        sessionId,
+        channelId,
+        userId: 'test-user',
+        prompt: 'test sendPrompt',
+        projectPath,
+      });
+      runningSession.opencodeSessionId = 'oc_session_123';
+      runningSession.markRunning();
+
+      manager.activeSessions = new Map([[sessionId, runningSession]]);
+      manager.channelSessions = new Map([[channelId, new Set([sessionId])]]);
+
+      const sendPromptSpy = vi.fn().mockResolvedValue(undefined);
+      manager.sdkAdapter = {
+        sendPrompt: sendPromptSpy,
+      };
+
+      await sessionManager.sendPrompt(sessionId, 'test prompt message');
+
+      expect(sendPromptSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: 'oc_session_123',
+          prompt: 'test prompt message',
+          directory: projectPath,
+        }),
+      );
+    });
   });
 });

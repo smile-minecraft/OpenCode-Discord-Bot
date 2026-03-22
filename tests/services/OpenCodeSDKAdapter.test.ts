@@ -875,6 +875,7 @@ describe('OpenCodeSDKAdapter', () => {
           system: undefined,
           tools: undefined,
         },
+        query: undefined,
       });
     });
 
@@ -910,6 +911,7 @@ describe('OpenCodeSDKAdapter', () => {
           system: 'You are a helpful assistant',
           tools: { 'filesystem.read': true, 'bash.execute': false },
         },
+        query: undefined,
       });
     });
 
@@ -937,6 +939,39 @@ describe('OpenCodeSDKAdapter', () => {
       await expect(adapter.sendPrompt({ sessionId: 'session-123', prompt: 'test' })).rejects.toThrow(SDKAdapterError);
       await expect(adapter.sendPrompt({ sessionId: 'session-123', prompt: 'test' })).rejects.toMatchObject({
         code: 'NOT_INITIALIZED',
+      });
+    });
+
+    it('應該傳遞 directory 參數到 SDK', async () => {
+      const mockClient = {
+        event: { subscribe: vi.fn() },
+        session: {
+          create: vi.fn(),
+          prompt: vi.fn().mockResolvedValue(undefined),
+        },
+        postSessionIdPermissionsPermissionId: vi.fn(),
+        auth: { set: vi.fn() },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+
+      await adapter.sendPrompt({
+        sessionId: 'session-123',
+        prompt: 'Hello with directory',
+        directory: '/custom/directory',
+      });
+
+      expect(mockClient.session.prompt).toHaveBeenCalledWith({
+        path: { id: 'session-123' },
+        body: {
+          parts: [{ type: 'text', text: 'Hello with directory' }],
+          model: undefined,
+          agent: undefined,
+          system: undefined,
+          tools: undefined,
+        },
+        query: { directory: '/custom/directory' },
       });
     });
   });

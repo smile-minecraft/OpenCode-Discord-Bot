@@ -25,6 +25,7 @@ import * as path from 'path';
 // 服務匯入
 import {
   initializeSessionManager,
+  getSessionManager,
   initializeProjectManager,
   getQueueManager,
   initializeGitWorktreeService,
@@ -383,6 +384,11 @@ async function initializeServices(_config: ReturnType<typeof loadConfig>): Promi
   try {
     initializeSessionManager();
     logger.info('[Bootstrap] Session Manager initialized');
+
+    // 恢復重啟前的活躍 Session
+    const sessionManager = getSessionManager();
+    await sessionManager.restoreActiveSessions();
+    logger.info('[Bootstrap] Restored active sessions from persistence');
   } catch (error) {
     logger.error('[Bootstrap] Failed to initialize Session Manager', {
       error: error instanceof Error ? error.message : String(error),

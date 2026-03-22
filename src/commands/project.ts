@@ -402,8 +402,7 @@ export class ProjectCommandHandler {
     await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
     try {
-      this.projectManager.bindProjectToChannel(projectId, resolvedChannelId);
-      await this.projectManager.save();
+      await this.projectManager.bindProjectToChannel(projectId, resolvedChannelId);
 
       const embed = new EmbedBuilder()
         .setColor(Colors.SUCCESS)

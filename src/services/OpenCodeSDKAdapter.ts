@@ -65,6 +65,8 @@ export interface SendPromptParams {
   sessionId: string;
   /** 訊息內容 */
   prompt: string;
+  /** 專案目錄（用於 SDK 隔離 session） */
+  directory?: string;
   /** 模型 ID */
   model?: {
     providerID: string;
@@ -478,6 +480,7 @@ export class OpenCodeSDKAdapter {
           system: params.system,
           tools: params.tools,
         },
+        query: params.directory ? { directory: params.directory } : undefined,
       });
       
       logger.info(`[OpenCodeSDKAdapter] 提示已發送到 Session ${params.sessionId}`);
