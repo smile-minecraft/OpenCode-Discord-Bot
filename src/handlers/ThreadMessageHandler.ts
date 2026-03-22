@@ -118,7 +118,7 @@ export class ThreadMessageHandler {
         const sessionEventManager = getSessionEventManager();
         let adapter = sessionEventManager.getSubscription(sessionId)?.adapter as SSEEventEmitterAdapter | undefined;
         if (!adapter) {
-          adapter = await sessionEventManager.subscribe(sessionId) as SSEEventEmitterAdapter;
+          adapter = await sessionEventManager.subscribe(sessionId, session.projectPath) as SSEEventEmitterAdapter;
         }
 
         // 啟動 Streaming（傳入 channelId 而非初始訊息）

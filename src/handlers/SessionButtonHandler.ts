@@ -316,7 +316,7 @@ export class SessionButtonHandler {
       const sessionEventManager = getSessionEventManager();
       let adapter = sessionEventManager.getSubscription(sessionId)?.adapter as SSEEventEmitterAdapter | undefined;
       if (!adapter) {
-        adapter = await sessionEventManager.subscribe(sessionId) as SSEEventEmitterAdapter;
+        adapter = await sessionEventManager.subscribe(sessionId, resumed.projectPath) as SSEEventEmitterAdapter;
       }
 
       const streamingManager = getStreamingMessageManager();

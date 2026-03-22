@@ -979,6 +979,18 @@ export class StreamingMessageManager {
       }
     }
 
+    // 補全 args：若先收到空參數事件，後續狀態事件帶到非空 args 時回填
+    // 避免時間線長期顯示 read()/glob() 而丟失工具參數細節
+    if (existingTool) {
+      const incomingArgs = data.args;
+      const existingArgsHash = this.hashArgs(existingTool.args);
+      const incomingArgsHash = this.hashArgs(incomingArgs);
+      if (existingArgsHash === 'empty' && incomingArgsHash !== 'empty') {
+        existingTool.args = incomingArgs as Record<string, unknown>;
+        logger.debug(`[StreamingMessageManager] Backfilled args for tool ${existingTool.id} (${existingTool.toolName})`);
+      }
+    }
+
     // 追蹤新的工具執行（避免重複）
     if (normalizedStatus === 'pending') {
       // 檢查是否已追蹤過（舊 tool_call* + 新 message.part.* 同時出現時）

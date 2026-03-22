@@ -415,7 +415,7 @@ async function handleStartCommand(
         const sessionEventManager = getSessionEventManager();
         let adapter = sessionEventManager.getSubscription(session.sessionId)?.adapter as SSEEventEmitterAdapter | undefined;
         if (!adapter) {
-          adapter = await sessionEventManager.subscribe(session.sessionId) as SSEEventEmitterAdapter;
+          adapter = await sessionEventManager.subscribe(session.sessionId, session.projectPath) as SSEEventEmitterAdapter;
         }
 
         const streamingManager = getStreamingMessageManager();

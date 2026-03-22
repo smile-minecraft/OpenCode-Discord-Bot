@@ -402,6 +402,53 @@ describe('StreamingMessageManager - 工具呼叫去重', () => {
       expect(mockStartTool).toHaveBeenCalledWith('session-status-2', 'tool-running-1');
     });
 
+    it('running 狀態帶非空 args 時應回填既有空 args', () => {
+      const privateState = manager as any;
+      const streamKey = 'channel-status:session-status-2b';
+      const mockClient = {
+        channels: { fetch: vi.fn().mockResolvedValue(null) },
+      } as any;
+      manager.setDiscordClient(mockClient);
+
+      privateState.activeStreams.set(streamKey, {
+        sessionId: 'session-status-2b',
+        channelId: 'channel-status',
+        content: '',
+        isComplete: false,
+        hasFlushed: false,
+        typingTimer: null,
+        stallTimer: null,
+        lastEventAt: Date.now(),
+        hasSentThinkingNotice: false,
+        discordClient: mockClient,
+      });
+
+      privateState.toolTrackingDedup.set('session-status-2b:req-running-2', 'tool-running-2');
+
+      const existingTool = {
+        id: 'tool-running-2',
+        toolName: 'Read',
+        status: 'pending',
+        args: {},
+        startedAt: Date.now(),
+      };
+      mockGetSessionTools.mockReturnValueOnce([existingTool]);
+
+      const handleToolRequestEvent = (manager as any).handleToolRequestEvent.bind(manager);
+      const toolEvent: ToolUpdateEventData = {
+        sessionId: 'session-status-2b',
+        toolName: 'Read',
+        requestId: 'req-running-2',
+        status: 'running',
+        args: { filePath: '/tmp/demo.txt' },
+      };
+
+      handleToolRequestEvent(toolEvent);
+
+      expect(mockStartTool).toHaveBeenCalledWith('session-status-2b', 'tool-running-2');
+      expect(existingTool.args).toEqual({ filePath: '/tmp/demo.txt' });
+    });
+
     it('completed 狀態應呼叫 completeTool', () => {
       const privateState = manager as any;
       const streamKey = 'channel-status:session-status-3';

@@ -370,7 +370,7 @@ export class OpenCodeSDKAdapter {
    * @returns SSEEventEmitterAdapter 實例
    * @throws {SDKAdapterError} 適配器未初始化
    */
-  public async subscribeToEvents(sessionId: string): Promise<SSEEventEmitterAdapter> {
+  public async subscribeToEvents(sessionId: string, directory?: string): Promise<SSEEventEmitterAdapter> {
     const client = this.getClient();
     
     // 創建新的 Adapter 實例
@@ -379,7 +379,9 @@ export class OpenCodeSDKAdapter {
     try {
       // 調用 SDK 的 event.subscribe() 方法
       // SDK 返回 Promise<ServerSentEventsResult>，AsyncGenerator 在 result.stream 中
-      const result = await client.event.subscribe();
+      const result = await client.event.subscribe({
+        query: directory ? { directory } : undefined,
+      });
       
       // 啟動 Adapter - 使用 as unknown as 進行類型轉換（SDK 類型複雜）
       adapter.start(result.stream as unknown as AsyncIterable<SDKEvent>, sessionId);

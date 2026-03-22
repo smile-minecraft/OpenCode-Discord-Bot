@@ -373,6 +373,36 @@ describe('OpenCodeSDKAdapter', () => {
 
       expect(result).toBeDefined();
       expect(result.getSessionId()).toBe('session-123');
+      expect(mockClient.event.subscribe).toHaveBeenCalledWith({
+        query: undefined,
+      });
+    });
+
+    it('傳入 directory 時應該帶入 query 參數', async () => {
+      const mockEventStream = {
+        stream: {
+          [Symbol.asyncIterator]: vi.fn().mockReturnValue({
+            next: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+          }),
+        },
+      };
+      const mockClient = {
+        global: {
+          event: vi.fn(),
+        },
+        event: {
+          subscribe: vi.fn().mockResolvedValue(mockEventStream),
+        },
+        session: { create: vi.fn() },
+      };
+      mockCreateOpencodeClientFn.mockReturnValue(mockClient);
+
+      await adapter.initialize({ projectPath: '/test/project', port: 3000 });
+      await adapter.subscribeToEvents('session-123', '/test/project');
+
+      expect(mockClient.event.subscribe).toHaveBeenCalledWith({
+        query: { directory: '/test/project' },
+      });
     });
 
     it('SDK 調用失敗時應該拋出 SDKAdapterError', async () => {

@@ -45,7 +45,9 @@ export type SDKEventType =
   | 'error'
   // Server events
   | 'server.connected'
-  | 'server.heartbeat';
+  | 'server.heartbeat'
+  // LSP events (noise, ignore)
+  | 'lsp.client.diagnostics';
 
 /**
  * SDK 事件屬性
@@ -258,6 +260,8 @@ const EVENT_TYPE_MAP: Record<SDKEventType, SSEEventTypeInternal | null> = {
   // Server events
   'server.connected': 'connected',
   'server.heartbeat': null,
+  // LSP diagnostics are high-frequency and currently not used for Discord rendering
+  'lsp.client.diagnostics': null,
 };
 
 // ============== 介面定義 ==============
@@ -702,26 +706,85 @@ export class SSEEventEmitterAdapter
    */
   private extractArgsFromLegacy(props: SDKEventProperties): Record<string, unknown> {
     // 白名單依序檢查
-    const keys = ['tool_args', 'toolArgs', 'args', 'arguments', 'parameters', 'input'];
+    const keys = [
+      'tool_args',
+      'toolArgs',
+      'tool_input',
+      'toolInput',
+      'args',
+      'arguments',
+      'parameters',
+      'params',
+      'input',
+      'payload',
+    ];
 
     for (const key of keys) {
       const value = (props as Record<string, unknown>)[key];
       if (value !== undefined) {
-        // 物件類型直接返回
-        if (value && typeof value === 'object' && !Array.isArray(value)) {
-          return value as Record<string, unknown>;
+        const normalized = this.normalizeArgsCandidate(value);
+        if (normalized) {
+          return normalized;
         }
-        // string JSON 嘗試解析
-        if (typeof value === 'string' && value.trim()) {
-          const parsed = this.tryParseJSON(value);
-          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-            return parsed as Record<string, unknown>;
-          }
+      }
+    }
+
+    // 某些 SDK 事件會把工具參數放在 info/message 巢狀結構
+    const nestedCandidates: Array<Record<string, unknown> | null> = [
+      props.info && typeof props.info === 'object' ? props.info as Record<string, unknown> : null,
+      props.message && typeof props.message === 'object' ? props.message as Record<string, unknown> : null,
+    ];
+
+    for (const container of nestedCandidates) {
+      if (!container) continue;
+      for (const key of keys) {
+        const value = container[key];
+        if (value === undefined) continue;
+        const normalized = this.normalizeArgsCandidate(value);
+        if (normalized) {
+          return normalized;
         }
       }
     }
 
     return {};
+  }
+
+  /**
+   * 正規化工具參數候選值
+   * - 物件：直接返回
+   * - JSON 字串：解析後若為物件返回
+   * - 非物件（字串/數字/布林/陣列）：以 value 包裝，避免資訊遺失
+   */
+  private normalizeArgsCandidate(value: unknown): Record<string, unknown> | null {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+
+    if (typeof value === 'string') {
+      if (!value.trim()) return null;
+
+      const parsed = this.tryParseJSON(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+
+      return { value };
+    }
+
+    if (Array.isArray(value)) {
+      return { value };
+    }
+
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return { value };
+    }
+
+    return null;
   }
 
   /**

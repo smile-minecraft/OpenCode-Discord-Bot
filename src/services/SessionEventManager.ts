@@ -27,7 +27,7 @@ export interface SessionEventSubscription {
  * SessionEventManager 公開介面
  */
 export interface ISessionEventManager {
-  subscribe(sessionId: string): Promise<SSEEventEmitterAdapter>;
+  subscribe(sessionId: string, directory?: string): Promise<SSEEventEmitterAdapter>;
   unsubscribe(sessionId: string): void;
   getSubscription(sessionId: string): SessionEventSubscription | undefined;
   hasSubscription(sessionId: string): boolean;
@@ -59,7 +59,7 @@ export class SessionEventManager implements ISessionEventManager {
    * @param sessionId Session ID
    * @returns SSEEventEmitterAdapter 實例
    */
-  async subscribe(sessionId: string): Promise<SSEEventEmitterAdapter> {
+  async subscribe(sessionId: string, directory?: string): Promise<SSEEventEmitterAdapter> {
     // 檢查是否已有訂閱
     const existingSubscription = this.subscriptions.get(sessionId);
     if (existingSubscription) {
@@ -74,7 +74,7 @@ export class SessionEventManager implements ISessionEventManager {
 
     try {
       // 調用 SDK 適配器訂閱事件
-      const adapter = await this.sdkAdapter.subscribeToEvents(sessionId);
+      const adapter = await this.sdkAdapter.subscribeToEvents(sessionId, directory);
 
       // 創建清理函數
       const cleanup = () => {

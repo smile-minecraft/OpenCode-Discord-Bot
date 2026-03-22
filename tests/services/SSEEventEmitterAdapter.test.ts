@@ -1736,6 +1736,58 @@ describe('SSEEventEmitterAdapter', () => {
       // toolArgs 應被使用（白名單順序）
       expect(call.data.args).toEqual({ from: 'toolArgs' });
     });
+
+    it('tool_request 應可從 props.info 巢狀欄位提取參數', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-info-1',
+          request_id: 'req-legacy-info-1',
+          tool_name: 'Read',
+          info: {
+            input: { filePath: '/tmp/a.txt' },
+          },
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-info-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ filePath: '/tmp/a.txt' });
+    });
+
+    it('tool_request 的非物件參數應保留為 value 包裝', async () => {
+      const event: SDKEvent = {
+        type: 'tool_call',
+        properties: {
+          session_id: 'session-legacy-value-1',
+          request_id: 'req-legacy-value-1',
+          tool_name: 'Read',
+          input: '/tmp/a.txt',
+        } as any,
+      };
+
+      const mockEventStream = createMockEventStream([event]);
+      const toolHandler = vi.fn();
+      adapter.on('tool_request', toolHandler);
+
+      adapter.start(mockEventStream, 'session-legacy-value-1');
+
+      await vi.waitFor(() => {
+        expect(toolHandler).toHaveBeenCalled();
+      });
+
+      const call = toolHandler.mock.calls[0][0];
+      expect(call.data.args).toEqual({ value: '/tmp/a.txt' });
+    });
   });
 });
 
