@@ -803,6 +803,40 @@ export interface ClearSessionsResult {
   }
 
   /**
+   * 依 threadId 取得 Session
+   * @param threadId Discord Thread ID
+   * @returns 找到的 Session 或 undefined
+   */
+  getSessionByThreadId(threadId: string): Session | undefined {
+    for (const [, session] of this.activeSessions) {
+      if (session.threadId === threadId) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 取得頻道中最近建立的 Session（不限狀態）
+   * @param channelId 頻道 ID
+   * @returns 最近建立的 Session 或 undefined
+   */
+  getLatestSessionByChannel(channelId: string): Session | undefined {
+    const resolvedChannelId = this.resolveParentChannelId(channelId);
+    let latestSession: Session | undefined;
+
+    for (const [, session] of this.activeSessions) {
+      if (session.channelId === resolvedChannelId) {
+        if (!latestSession || new Date(session.startedAt) > new Date(latestSession.startedAt)) {
+          latestSession = session;
+        }
+      }
+    }
+
+    return latestSession;
+  }
+
+  /**
    * 更新 Session 狀態
    */
   updateSessionStatus(sessionId: string, status: SessionStatus): void {

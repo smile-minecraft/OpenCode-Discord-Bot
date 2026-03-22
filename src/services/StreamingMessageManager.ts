@@ -1302,6 +1302,9 @@ export class StreamingMessageManager {
     if (value === null) return 'null';
     if (value === undefined) return 'undefined';
     if (typeof value === 'string') {
+      if (this.isPathLikeString(value)) {
+        return `"${this.summarizePathString(value)}"`;
+      }
       if (value.length > 30) return `"${value.slice(0, 30)}..."`;
       return `"${value}"`;
     }
@@ -1316,6 +1319,44 @@ export class StreamingMessageManager {
       return `{${keys.length} keys}`;
     }
     return '?';
+  }
+
+  private isPathLikeString(value: string): boolean {
+    return value.includes('/') || value.includes('\\');
+  }
+
+  private summarizePathString(pathValue: string): string {
+    const normalized = pathValue.replace(/\\/g, '/');
+    const isAbsolute = normalized.startsWith('/');
+    const parts = normalized.split('/').filter(Boolean);
+
+    if (parts.length <= 4) {
+      return pathValue;
+    }
+
+    const build = (headCount: number, tailCount: number): string => {
+      const head = parts.slice(0, headCount);
+      const tail = parts.slice(-tailCount);
+      const joined = [...head, '...', ...tail].join('/');
+      return isAbsolute ? `/${joined}` : joined;
+    };
+
+    const preferred = build(2, 2);
+    if (preferred.length <= 60) {
+      return preferred;
+    }
+
+    const fallback = build(2, 1);
+    if (fallback.length <= 60) {
+      return fallback;
+    }
+
+    const minimal = isAbsolute ? `/.../${parts[parts.length - 1]}` : `.../${parts[parts.length - 1]}`;
+    if (minimal.length <= 60) {
+      return minimal;
+    }
+
+    return minimal.slice(0, 57) + '...';
   }
 
   // ============== Session Completion Handling ==============

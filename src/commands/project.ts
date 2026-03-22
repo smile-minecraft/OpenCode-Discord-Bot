@@ -529,7 +529,8 @@ export class ProjectCommandHandler {
   }
 
   /**
-   * 截斷路徑顯示
+   * 截斷路徑顯示 - 顯示前兩個資料夾 + 後兩個資料夾/檔名
+   * 例如: /home/user/project/src/components/Button.tsx → /home/user/.../components/Button.tsx
    */
   private truncatePath(path: string, maxLength: number = 40): string {
     if (path.length <= maxLength) {
@@ -537,15 +538,36 @@ export class ProjectCommandHandler {
     }
 
     const parts = path.split('/');
-    if (parts.length <= 2) {
-      return '...' + path.slice(-maxLength + 3);
+    
+    // 總 segments 數量
+    const total = parts.length;
+    
+    // 如果 segments 太少，直接顯示完整路徑
+    if (total <= 4) {
+      return path;
     }
-
-    // 保留開頭和結尾
-    const first = parts[0];
-    const last = parts[parts.length - 1];
-
-    return `${first}/.../${last}`;
+    
+    // 固定取前 2 個 + 後 2 個
+    const firstParts = parts.slice(0, 2);
+    const lastParts = parts.slice(-2);
+    
+    const result = `${firstParts.join('/')}/.../${lastParts.join('/')}`;
+    
+    // 如果結果還是太長，再截斷後面的部分
+    if (result.length <= maxLength) {
+      return result;
+    }
+    
+    // 逐步減少 lastParts 直到符合長度
+    for (let i = 2; i >= 1; i--) {
+      const truncated = `${firstParts.join('/')}/.../${lastParts.slice(-i).join('/')}`;
+      if (truncated.length <= maxLength) {
+        return truncated;
+      }
+    }
+    
+    // 最後手段：只顯示前兩個
+    return `${firstParts.join('/')}/...`;
   }
 
   /**

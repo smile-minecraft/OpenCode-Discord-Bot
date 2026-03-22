@@ -243,7 +243,7 @@ export async function handleSessionAgentAutocomplete(
 
     await interaction.respond(
       filtered.map((agent) => ({
-        name: `${agent.name} (${agent.id})`.slice(0, 100),
+        name: agent.name,
         value: agent.id,
       }))
     );
@@ -665,26 +665,51 @@ async function handleSettingsCommand(
     return;
   }
 
-  // Server-side agent 驗證（若指定了 agent）
-  if (agent) {
-    const availableAgents = await getAvailableAgents({ projectPath: undefined, useCache: true, allowFallback: true });
-    const primaryAgents = filterPrimaryAgents(availableAgents);
-    const isValidAgent = primaryAgents.some((a) => a.id === agent);
+  // 自動偵測 Session（若未指定 session_id）
+  let targetSessionId = inputSessionId;
 
-    if (!isValidAgent) {
-      await interaction.editReply({
-        content: `❌ 無效的 Agent：\`${agent}\`。請選擇有效的主代理（${primaryAgents.map((a) => a.id).join(', ')}）。`,
-      });
-      return;
+  if (!targetSessionId) {
+    const channel = interaction.channel;
+    
+    // 1. 如果在 Thread 中，嘗試透過 threadId 找到對應的 Session
+    if (channel && (
+      channel.type === 11 || // PublicThread
+      channel.type === 12 || // PrivateThread
+      channel.type === 10    // AnnouncementThread
+    )) {
+      const threadSession = sessionManager.getSessionByThreadId(interaction.channelId);
+      if (threadSession) {
+        targetSessionId = threadSession.sessionId;
+      }
+    }
+    
+    // 2. 如果在 Channel 中，找最新的 Session（不限狀態）
+    if (!targetSessionId) {
+      const latestSession = sessionManager.getLatestSessionByChannel(interaction.channelId);
+      if (latestSession) {
+        targetSessionId = latestSession.sessionId;
+      }
     }
   }
 
-  const targetSessionId = inputSessionId || sessionManager.getActiveSessionByChannel(interaction.channelId)?.sessionId;
   if (!targetSessionId) {
     await interaction.editReply({
-      content: '❌ 此頻道沒有可更新的活躍 Session，請先使用 `/session start`',
+      content: '❌ 此頻道沒有可更新的 Session，請先使用 `/session start`',
     });
     return;
+  }
+
+  // Server-side agent 驗證（若指定了 agent）
+  if (agent) {
+    const availableAgents = await getAvailableAgents({ projectPath: undefined, useCache: true, allowFallback: true });
+    const isValidAgent = availableAgents.some((a) => a.id === agent);
+
+    if (!isValidAgent) {
+      await interaction.editReply({
+        content: `❌ 無效的 Agent：\`${agent}\`。可用代理：${availableAgents.map((a) => a.id).join(', ')}。`,
+      });
+      return;
+    }
   }
 
   try {
